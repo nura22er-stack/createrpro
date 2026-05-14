@@ -1,0 +1,13 @@
+node_modules/
+.venv/
+.data/
+uploads/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+*.zip
+.env*
+!.env.example
+client_secrets.json

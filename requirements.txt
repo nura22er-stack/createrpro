@@ -1,0 +1,7 @@
+beautifulsoup4==4.14.3
+ffmpeg-python==0.2.0
+lxml==6.1.0
+moviepy==2.2.1
+playwright==1.59.0
+requests==2.34.1
+yt-dlp==2026.3.17
