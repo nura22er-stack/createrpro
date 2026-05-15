@@ -1,5 +1,6 @@
 import express from 'express';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -34,6 +35,8 @@ const agentShortDuration = Number(process.env.AGENT_SHORT_DURATION_SECONDS || 18
 const staleProcessingMs = Number(process.env.AGENT_STALE_PROCESSING_MS || 2 * 60 * 1000);
 const agentDailyUploadLimit = Number(process.env.AGENT_DAILY_UPLOAD_LIMIT || 2);
 const agentDayTimezoneOffsetMinutes = Number(process.env.AGENT_DAY_TIMEZONE_OFFSET_MINUTES || 5 * 60);
+const adminEmail = (process.env.ADMIN_EMAIL || 'nura22er@gmail.com').toLowerCase();
+const sessionCookieName = 'creator_pro_admin';
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(distDir));
@@ -97,6 +100,79 @@ function getOAuthClient() {
   }
 
   return client;
+}
+
+function getSessionSecret() {
+  const secrets = readClientSecrets();
+  return process.env.SESSION_SECRET || process.env.YOUTUBE_CLIENT_SECRET || secrets?.client_secret || 'creator-pro-local-session';
+}
+
+function parseCookies(cookieHeader = '') {
+  return Object.fromEntries(
+    cookieHeader
+      .split(';')
+      .map((cookie) => cookie.trim())
+      .filter(Boolean)
+      .map((cookie) => {
+        const [name, ...rest] = cookie.split('=');
+        return [name, decodeURIComponent(rest.join('='))];
+      }),
+  );
+}
+
+function signSession(email: string) {
+  const payload = Buffer.from(JSON.stringify({ email: email.toLowerCase(), createdAt: Date.now() })).toString('base64url');
+  const signature = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function readSessionEmail(req: express.Request) {
+  const cookieValue = parseCookies(req.headers.cookie)[sessionCookieName];
+  if (!cookieValue) return '';
+
+  const [payload, signature] = cookieValue.split('.');
+  if (!payload || !signature) return '';
+
+  const expected = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('base64url');
+  if (signature.length !== expected.length) return '';
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return '';
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return String(parsed.email || '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isAdminRequest(req: express.Request) {
+  return readSessionEmail(req) === adminEmail;
+}
+
+function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (isAdminRequest(req)) {
+    next();
+    return;
+  }
+
+  res.status(401).json({ error: 'Admin login required.', loginUrl: '/auth/admin' });
+}
+
+function getAppUrl() {
+  return process.env.APP_URL || 'http://localhost:3001';
+}
+
+function readGoogleEmailFromIdToken(idToken?: string | null) {
+  if (!idToken) return '';
+  const [, payload] = idToken.split('.');
+  if (!payload) return '';
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return String(parsed.email || '').toLowerCase();
+  } catch {
+    return '';
+  }
 }
 
 function getStatus() {
@@ -634,8 +710,18 @@ async function processNextAgentJob() {
   }
 }
 
-app.get('/api/config/status', (_req, res) => {
+app.get('/api/config/status', requireAdmin, (_req, res) => {
   res.json(getStatus());
+});
+
+app.get('/api/session', (req, res) => {
+  const email = readSessionEmail(req);
+  res.json({
+    authenticated: email === adminEmail,
+    email: email === adminEmail ? email : '',
+    adminEmail,
+    loginUrl: '/auth/admin',
+  });
 });
 
 app.get('/api/voice/welcome', async (_req, res) => {
@@ -704,11 +790,11 @@ app.get('/api/voice/welcome', async (_req, res) => {
   }
 });
 
-app.get('/api/agent/status', (_req, res) => {
+app.get('/api/agent/status', requireAdmin, (_req, res) => {
   res.json(readAgentState());
 });
 
-app.post('/api/agent/start', (_req, res) => {
+app.post('/api/agent/start', requireAdmin, (_req, res) => {
   if (!fs.existsSync(tokenPath)) {
     res.status(409).json({
       error: 'YouTube account is not connected. Connect YouTube before starting the AI agent.',
@@ -730,7 +816,7 @@ app.post('/api/agent/start', (_req, res) => {
   res.json(state);
 });
 
-app.post('/api/agent/pause', (_req, res) => {
+app.post('/api/agent/pause', requireAdmin, (_req, res) => {
   const state = writeAgentState({
     running: false,
     mode: 'paused',
@@ -741,7 +827,7 @@ app.post('/api/agent/pause', (_req, res) => {
   res.json(state);
 });
 
-app.post('/api/agent/source', upload.single('video'), (req, res) => {
+app.post('/api/agent/source', requireAdmin, upload.single('video'), (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: 'Video file is required.' });
     return;
@@ -757,7 +843,7 @@ app.post('/api/agent/source', upload.single('video'), (req, res) => {
   res.json({ ok: true, fileName, queueCount: listSourceVideos().length });
 });
 
-app.get('/api/profile', (_req, res) => {
+app.get('/api/profile', requireAdmin, (_req, res) => {
   if (!fs.existsSync(profilePath)) {
     res.json({});
     return;
@@ -766,13 +852,41 @@ app.get('/api/profile', (_req, res) => {
   res.json(JSON.parse(fs.readFileSync(profilePath, 'utf8')));
 });
 
-app.put('/api/profile', (req, res) => {
+app.put('/api/profile', requireAdmin, (req, res) => {
   ensureDataDir();
   fs.writeFileSync(profilePath, JSON.stringify(req.body || {}, null, 2));
   res.json({ ok: true, profile: req.body || {} });
 });
 
-app.get('/auth/youtube', (_req, res) => {
+app.get('/auth/admin', (_req, res) => {
+  const client = getOAuthClient();
+
+  if (!client) {
+    res.status(400).send('Google OAuth client is not configured.');
+    return;
+  }
+
+  const url = client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'select_account',
+    state: 'admin-login',
+    scope: ['openid', 'email', 'profile'],
+  });
+
+  res.redirect(url);
+});
+
+app.post('/auth/admin/logout', (_req, res) => {
+  res.setHeader('Set-Cookie', `${sessionCookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+  res.json({ ok: true });
+});
+
+app.get('/auth/youtube', (req, res) => {
+  if (!isAdminRequest(req)) {
+    res.redirect('/?auth=required');
+    return;
+  }
+
   const client = getOAuthClient();
 
   if (!client) {
@@ -783,6 +897,7 @@ app.get('/auth/youtube', (_req, res) => {
   const url = client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
+    state: 'youtube-connect',
     scope: [
       'https://www.googleapis.com/auth/youtube.upload',
       'https://www.googleapis.com/auth/youtube.readonly',
@@ -796,6 +911,7 @@ app.get('/auth/youtube', (_req, res) => {
 
 app.get('/auth/youtube/callback', async (req, res) => {
   const code = String(req.query.code || '');
+  const state = String(req.query.state || '');
   const client = getOAuthClient();
 
   if (!client || !code) {
@@ -804,9 +920,27 @@ app.get('/auth/youtube/callback', async (req, res) => {
   }
 
   const { tokens } = await client.getToken(code);
+  if (state === 'admin-login') {
+    const email = readGoogleEmailFromIdToken(tokens.id_token);
+
+    if (email !== adminEmail) {
+      res.status(403).send(`Bu dashboard faqat ${adminEmail} uchun. Siz kirgan akkaunt: ${email || 'unknown'}`);
+      return;
+    }
+
+    res.setHeader('Set-Cookie', `${sessionCookieName}=${encodeURIComponent(signSession(email))}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`);
+    res.redirect(`${getAppUrl()}?admin=connected`);
+    return;
+  }
+
+  if (!isAdminRequest(req)) {
+    res.redirect('/?auth=required');
+    return;
+  }
+
   ensureDataDir();
   fs.writeFileSync(tokenPath, JSON.stringify(tokens, null, 2));
-  res.redirect(`${process.env.APP_URL || 'http://localhost:3001'}?youtube=connected`);
+  res.redirect(`${getAppUrl()}?youtube=connected`);
 });
 
 app.get('*', (req, res, next) => {
@@ -825,7 +959,7 @@ app.get('*', (req, res, next) => {
   res.redirect(process.env.APP_URL || 'http://localhost:3001');
 });
 
-app.post('/auth/youtube/disconnect', (_req, res) => {
+app.post('/auth/youtube/disconnect', requireAdmin, (_req, res) => {
   if (fs.existsSync(tokenPath)) {
     fs.unlinkSync(tokenPath);
   }
@@ -833,7 +967,7 @@ app.post('/auth/youtube/disconnect', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/youtube/channel', async (_req, res) => {
+app.get('/api/youtube/channel', requireAdmin, async (_req, res) => {
   const client = getOAuthClient();
 
   if (!client || !fs.existsSync(tokenPath)) {
@@ -850,7 +984,7 @@ app.get('/api/youtube/channel', async (_req, res) => {
   res.json(response.data.items?.[0] || null);
 });
 
-app.get('/api/youtube/videos', async (_req, res) => {
+app.get('/api/youtube/videos', requireAdmin, async (_req, res) => {
   const client = getOAuthClient();
 
   if (!client || !fs.existsSync(tokenPath)) {
@@ -912,7 +1046,7 @@ app.get('/api/youtube/videos', async (_req, res) => {
   }
 });
 
-app.post('/api/youtube/upload', upload.single('video'), async (req, res) => {
+app.post('/api/youtube/upload', requireAdmin, upload.single('video'), async (req, res) => {
   const client = getOAuthClient();
 
   if (!client || !fs.existsSync(tokenPath)) {

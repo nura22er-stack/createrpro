@@ -19,6 +19,13 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ActiveTab } from './types';
 import { UserProfile } from './types';
 
+interface SessionState {
+  authenticated: boolean;
+  email: string;
+  adminEmail: string;
+  loginUrl: string;
+}
+
 const emptyProfile: UserProfile = {
   ownerName: '',
   channelName: '',
@@ -32,6 +39,7 @@ const emptyProfile: UserProfile = {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('Dashboard');
+  const [session, setSession] = useState<SessionState | null>(null);
   const [profile, setProfileState] = useState<UserProfile>(() => {
     try {
       const stored = localStorage.getItem('creator-pro-profile');
@@ -43,6 +51,7 @@ export default function App() {
   const [profileSaveStatus, setProfileSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'offline'>('idle');
 
   function setProfile(nextProfile: UserProfile) {
+    if (!session?.authenticated) return;
     setProfileState(nextProfile);
     localStorage.setItem('creator-pro-profile', JSON.stringify(nextProfile));
     setProfileSaveStatus('saving');
@@ -60,6 +69,15 @@ export default function App() {
   }
 
   useEffect(() => {
+    fetch('/api/session')
+      .then((response) => response.json())
+      .then(setSession)
+      .catch(() => setSession({ authenticated: false, email: '', adminEmail: 'nura22er@gmail.com', loginUrl: '/auth/admin' }));
+  }, []);
+
+  useEffect(() => {
+    if (!session?.authenticated) return;
+
     fetch('/api/profile')
       .then((response) => {
         if (!response.ok) throw new Error('Profile load failed');
@@ -72,7 +90,7 @@ export default function App() {
         setProfileSaveStatus('saved');
       })
       .catch(() => setProfileSaveStatus('offline'));
-  }, []);
+  }, [session?.authenticated]);
 
   useEffect(() => {
     if (sessionStorage.getItem('creator-pro-welcome-spoken')) return;
@@ -108,11 +126,43 @@ export default function App() {
     };
   }, []);
 
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-6">
+        <div className="glass-panel rounded-2xl p-6 w-full max-w-sm text-center">
+          <p className="text-sm text-zinc-400">Creator Pro yuklanmoqda...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session.authenticated) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4 selection:bg-red-500/30">
+        <div className="glass-panel rounded-2xl p-6 sm:p-8 w-full max-w-md">
+          <div className="w-12 h-12 bg-red-600 rounded-xl flex items-center justify-center shadow-lg shadow-red-500/20 mb-5">
+            <Award className="w-6 h-6 text-white" />
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-display font-bold text-white">Creator Pro Admin</h1>
+          <p className="text-sm text-zinc-400 mt-3 leading-relaxed">
+            Bu dashboard shaxsiy. Account, YouTube statistika va admin panel faqat {session.adminEmail} orqali ochiladi.
+          </p>
+          <a
+            href={session.loginUrl}
+            className="mt-6 w-full bg-red-600 hover:bg-red-700 text-white px-4 py-3 rounded-xl text-sm font-bold flex items-center justify-center transition-all"
+          >
+            Google bilan kirish
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen bg-zinc-950 text-zinc-100 selection:bg-red-500/30">
+    <div className="flex flex-col md:flex-row min-h-screen bg-zinc-950 text-zinc-100 selection:bg-red-500/30">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
       
-      <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 h-[calc(100vh-76px)] md:h-screen overflow-hidden">
         {activeTab !== 'AI Editor' && (
           <DashboardHeader
             profile={profile}
@@ -129,7 +179,7 @@ export default function App() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="p-8 space-y-10 max-w-[1600px] mx-auto w-full"
+                className="p-4 sm:p-6 lg:p-8 space-y-8 lg:space-y-10 max-w-[1600px] mx-auto w-full"
               >
                 {/* Welcome Area */}
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -144,7 +194,7 @@ export default function App() {
                       </div>
                       <span className="text-xs font-bold text-red-500 uppercase tracking-widest">Creator Profile</span>
                     </motion.div>
-                    <h1 className="text-4xl font-display font-bold text-white tracking-tight">
+                    <h1 className="text-3xl sm:text-4xl font-display font-bold text-white tracking-tight">
                       {profile.channelName || 'Your Channel Overview'}
                     </h1>
                     <p className="text-zinc-500 mt-1">

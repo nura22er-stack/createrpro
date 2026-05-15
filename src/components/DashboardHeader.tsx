@@ -14,8 +14,8 @@ export default function DashboardHeader({ profile, onCreate, onOpenSettings }: D
   const role = profile.channelName || 'Your channel';
 
   return (
-    <header className="h-20 border-b border-zinc-800/50 sticky top-0 bg-zinc-950/80 backdrop-blur-md z-10 px-8 flex items-center justify-between">
-      <div className="flex-1 max-w-xl">
+    <header className="min-h-16 md:h-20 border-b border-zinc-800/50 sticky top-0 bg-zinc-950/80 backdrop-blur-md z-10 px-4 md:px-8 py-3 md:py-0 flex items-center justify-between gap-3">
+      <div className="flex-1 max-w-xl hidden sm:block">
         <div className="relative group">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 group-focus-within:text-red-500 transition-colors" />
           <input 
@@ -26,7 +26,7 @@ export default function DashboardHeader({ profile, onCreate, onOpenSettings }: D
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2 md:gap-4 ml-auto">
         <button
           onClick={() => window.alert('No new notifications.')}
           className="p-2.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl transition-all relative"
@@ -35,21 +35,21 @@ export default function DashboardHeader({ profile, onCreate, onOpenSettings }: D
           <span className="absolute top-2.5 right-2.5 w-2 h-2 bg-red-600 rounded-full border-2 border-zinc-950" />
         </button>
         
-        <div className="h-8 w-px bg-zinc-800 mx-2" />
+        <div className="hidden sm:block h-8 w-px bg-zinc-800 mx-2" />
         
         <motion.button 
           onClick={onCreate}
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
-          className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-red-600/20 transition-all"
+          className="bg-red-600 hover:bg-red-700 text-white px-3 md:px-4 py-2.5 rounded-xl text-xs md:text-sm font-bold flex items-center gap-2 shadow-lg shadow-red-600/20 transition-all"
         >
           <Plus className="w-4 h-4" />
-          Create
+          <span className="hidden sm:inline">Create</span>
         </motion.button>
 
         <button
           onClick={onOpenSettings}
-          className="flex items-center gap-3 pl-2 pr-1 py-1 rounded-full hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700/50"
+          className="flex items-center gap-3 pl-1 sm:pl-2 pr-1 py-1 rounded-full hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700/50"
         >
           <div className="text-right hidden sm:block">
             <p className="text-xs font-bold text-white tracking-tight leading-none mb-0.5">{displayName}</p>
