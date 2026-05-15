@@ -727,30 +727,49 @@ function runFfmpeg(inputPath: string, outputPath: string) {
 
 function buildUploadMetadata(sourcePath: string) {
   const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
-  const topic = profile.niche || 'funny shorts';
+  const rawTopic = String(profile.niche || '').trim();
+  const topic = /automation|dashboard|creator pro|youtube ai/i.test(rawTopic) ? 'funny facts and useful shorts' : rawTopic || 'funny facts and useful shorts';
+  const currentSource = readAgentState().currentSource as { title?: string; provider?: string } | undefined;
+  const sourceTitle = String(currentSource?.title || '').replace(/[_-]+/g, ' ').trim();
   const titleSeed = path.basename(sourcePath, path.extname(sourcePath)).replace(/[-_]+/g, ' ');
   const hooks = [
-    'Wait for the unexpected ending',
-    'This old comedy moment still works',
-    'The timing is perfect',
-    'Vintage comedy in 18 seconds',
-    'This silent comedy bit is wild',
-    'A quick laugh before you scroll',
+    'People really used to do this',
+    'This old moment is still funny',
+    'A tiny piece of history',
+    'This is oddly satisfying',
+    'You probably have not seen this',
+    'Useful and funny in 18 seconds',
+    'The ending is worth it',
+    'This vintage clip feels unreal',
   ];
   const hook = hooks[Math.abs(titleSeed.length + new Date().getMinutes()) % hooks.length];
-  const title = `${hook} | ${topic} #shorts`.slice(0, 100);
+  const titleContext = sourceTitle ? ` - ${sourceTitle}` : '';
+  const title = `${hook}${titleContext} #shorts`.slice(0, 100);
 
   return {
     title,
     description: [
-      `Short, AI-edited public-domain/rights-safe clip uploaded by Creator Pro Dashboard.`,
-      `If this made you smile, like and subscribe for more daily comedy shorts.`,
+      `Quick AI-edited Shorts clip made from a rights-safe public-domain source.`,
+      sourceTitle ? `Source theme: ${sourceTitle}` : `Theme: ${topic}`,
+      `If this was interesting or made you smile, like and subscribe for more short clips.`,
       `Topic: ${topic}`,
-      `Language: ${profile.language || 'Uzbek'}`,
+      `New short clips are posted daily.`,
       '',
-      '#shorts #funny #comedy #viral #trending #fyp #creatorpro',
+      '#shorts #funny #didyouknow',
     ].join('\n'),
-    tags: ['shorts', 'funny', 'comedy', 'viral', 'trending', 'fyp', 'creatorpro', String(topic).toLowerCase()].filter(Boolean),
+    tags: [
+      'shorts',
+      'funny shorts',
+      'did you know',
+      'interesting facts',
+      'useful shorts',
+      'vintage comedy',
+      'public domain',
+      'history shorts',
+      'viral shorts',
+      'daily shorts',
+      String(topic).toLowerCase(),
+    ].filter(Boolean),
   };
 }
 
