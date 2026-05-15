@@ -30,6 +30,7 @@ const agentUploadIntervalMs = Number(process.env.AGENT_UPLOAD_INTERVAL_MS || 5 *
 const agentTickMs = Number(process.env.AGENT_TICK_MS || 30 * 1000);
 const agentOutputWidth = Number(process.env.AGENT_OUTPUT_WIDTH || 720);
 const agentOutputHeight = Number(process.env.AGENT_OUTPUT_HEIGHT || 1280);
+const agentShortDuration = Number(process.env.AGENT_SHORT_DURATION_SECONDS || 18);
 const staleProcessingMs = Number(process.env.AGENT_STALE_PROCESSING_MS || 2 * 60 * 1000);
 
 app.use(express.json({ limit: '2mb' }));
@@ -223,8 +224,16 @@ function getNextAgentSourceUrl() {
 async function discoverWikimediaSourceUrl() {
   const cursor = readAgentSourceCursor();
   const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
-  const query = String(profile.niche || 'nature city technology').replace(/[^\w\s-]/g, ' ').trim();
-  const searchQueries = [query, 'nature landscape', 'city timelapse', 'technology science'].filter(Boolean);
+  const query = String(profile.niche || 'funny comedy surprising').replace(/[^\w\s-]/g, ' ').trim();
+  const searchQueries = [
+    query,
+    'funny comedy public domain',
+    'surprising moment',
+    'funny city',
+    'short funny',
+    'comedy',
+    'timelapse funny',
+  ].filter(Boolean);
 
   for (const searchQuery of searchQueries) {
     const params = new URLSearchParams({
@@ -352,12 +361,20 @@ function runFfmpeg(inputPath: string, outputPath: string) {
       '-y',
       '-i',
       inputPath,
+      '-f',
+      'lavfi',
       '-t',
-      '58',
+      String(agentShortDuration),
+      '-i',
+      `sine=frequency=440:beep_factor=4:sample_rate=44100:duration=${agentShortDuration},volume=0.06`,
+      '-t',
+      String(agentShortDuration),
       '-vf',
       `scale=${agentOutputWidth}:${agentOutputHeight}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${agentOutputWidth}:${agentOutputHeight}:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.55:3:3:0.25,eq=contrast=1.06:saturation=1.12,setsar=1,format=yuv420p`,
-      '-af',
-      'loudnorm=I=-14:TP=-1.5:LRA=11',
+      '-map',
+      '0:v:0',
+      '-map',
+      '1:a:0',
       '-r',
       '30',
       '-c:v',
@@ -375,7 +392,8 @@ function runFfmpeg(inputPath: string, outputPath: string) {
       '-c:a',
       'aac',
       '-b:a',
-      '192k',
+      '128k',
+      '-shortest',
       '-movflags',
       '+faststart',
       outputPath,
@@ -396,20 +414,28 @@ function runFfmpeg(inputPath: string, outputPath: string) {
 
 function buildUploadMetadata(sourcePath: string) {
   const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
-  const topic = profile.niche || 'AI automation';
+  const topic = profile.niche || 'funny shorts';
   const titleSeed = path.basename(sourcePath, path.extname(sourcePath)).replace(/[-_]+/g, ' ');
-  const title = `${titleSeed} | ${topic} #shorts`.slice(0, 100);
+  const hooks = [
+    'Wait for the ending',
+    'This moment was unexpected',
+    'Short funny moment',
+    'That timing was perfect',
+    'Quick laugh of the day',
+  ];
+  const hook = hooks[Math.abs(titleSeed.length + new Date().getMinutes()) % hooks.length];
+  const title = `${hook} | ${topic} #shorts`.slice(0, 100);
 
   return {
     title,
     description: [
-      `AI edited and uploaded by Creator Pro Dashboard.`,
+      `Short, AI-edited public-domain/rights-safe clip uploaded by Creator Pro Dashboard.`,
       `Topic: ${topic}`,
       `Language: ${profile.language || 'Uzbek'}`,
       '',
-      '#shorts #ai #creatorpro',
+      '#shorts #funny #comedy #ai #creatorpro',
     ].join('\n'),
-    tags: ['shorts', 'ai', 'creatorpro', String(topic).toLowerCase()].filter(Boolean),
+    tags: ['shorts', 'funny', 'comedy', 'ai', 'creatorpro', String(topic).toLowerCase()].filter(Boolean),
   };
 }
 
@@ -432,7 +458,7 @@ async function uploadVideoPath(videoPath: string, metadata: { title: string; des
         title: metadata.title,
         description: metadata.description,
         tags: metadata.tags,
-        categoryId: '22',
+        categoryId: process.env.AGENT_YOUTUBE_CATEGORY_ID || '24',
       },
       status: {
         privacyStatus,
@@ -487,6 +513,7 @@ async function processNextAgentJob() {
     return;
   }
 
+  agentWorking = true;
   let [nextSource] = listSourceVideos();
   if (!nextSource) {
     try {
@@ -504,6 +531,7 @@ async function processNextAgentJob() {
         lastAction: 'AI agent could not fetch a source video. It will retry.',
         error: message,
       });
+      agentWorking = false;
       return;
     }
 
@@ -512,11 +540,11 @@ async function processNextAgentJob() {
         mode: 'running',
         lastAction: 'AI agent is running. Add videos to uploads/source or set AGENT_SOURCE_URLS.',
       });
+      agentWorking = false;
       return;
     }
   }
 
-  agentWorking = true;
   const processingPath = path.join(processingDir, path.basename(nextSource));
   const outputPath = path.join(processedDir, `${path.basename(nextSource, path.extname(nextSource))}-short.mp4`);
 
