@@ -76,19 +76,36 @@ export default function App() {
 
   useEffect(() => {
     if (sessionStorage.getItem('creator-pro-welcome-spoken')) return;
-    if (!('speechSynthesis' in window)) return;
 
-    const speakWelcome = () => {
-      const message = new SpeechSynthesisUtterance('Xush kelibsiz, janob.');
-      message.rate = 0.95;
-      message.pitch = 0.9;
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(message);
-      sessionStorage.setItem('creator-pro-welcome-spoken', 'true');
+    let audioUrl = '';
+
+    const playGeminiWelcome = async () => {
+      const response = await fetch('/api/voice/welcome');
+      if (!response.ok) return;
+      const blob = await response.blob();
+      audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+
+      const play = async () => {
+        try {
+          await audio.play();
+          sessionStorage.setItem('creator-pro-welcome-spoken', 'true');
+        } catch {
+          window.addEventListener('pointerdown', play, { once: true });
+        }
+      };
+
+      await play();
     };
 
-    const timer = window.setTimeout(speakWelcome, 700);
-    return () => window.clearTimeout(timer);
+    const timer = window.setTimeout(() => {
+      void playGeminiWelcome();
+    }, 700);
+
+    return () => {
+      window.clearTimeout(timer);
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+    };
   }, []);
 
   return (

@@ -17,6 +17,7 @@ const tokenPath = path.join(dataDir, 'youtube-token.json');
 const profilePath = path.join(dataDir, 'profile.json');
 const agentPath = path.join(dataDir, 'agent.json');
 const agentLogPath = path.join(dataDir, 'agent-log.json');
+const voiceDir = path.join(dataDir, 'voice');
 const sourceDir = path.resolve('uploads/source');
 const processingDir = path.resolve('uploads/processing');
 const processedDir = path.resolve('uploads/processed');
@@ -40,10 +41,33 @@ function readClientSecrets() {
 
 function ensureDataDir() {
   fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(voiceDir, { recursive: true });
   fs.mkdirSync(sourceDir, { recursive: true });
   fs.mkdirSync(processingDir, { recursive: true });
   fs.mkdirSync(processedDir, { recursive: true });
   fs.mkdirSync(failedDir, { recursive: true });
+}
+
+function pcmToWav(pcmData: Buffer, channels = 1, sampleRate = 24000, bitsPerSample = 16) {
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const header = Buffer.alloc(44);
+
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcmData.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcmData.length, 40);
+
+  return Buffer.concat([header, pcmData]);
 }
 
 function getOAuthClient() {
@@ -276,6 +300,72 @@ async function processNextAgentJob() {
 
 app.get('/api/config/status', (_req, res) => {
   res.json(getStatus());
+});
+
+app.get('/api/voice/welcome', async (_req, res) => {
+  try {
+    ensureDataDir();
+    const cachePath = path.join(voiceDir, 'welcome-janob.wav');
+
+    if (fs.existsSync(cachePath)) {
+      res.type('audio/wav').sendFile(cachePath);
+      return;
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      res.status(503).json({ error: 'GEMINI_API_KEY is missing.' });
+      return;
+    }
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: 'Say in a calm, respectful Uzbek male assistant voice: "Xush kelibsiz, janob."',
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: 'Kore' },
+              },
+            },
+          },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      res.status(response.status).json({ error: errorText });
+      return;
+    }
+
+    const result = await response.json();
+    const data = result.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
+    if (!data) {
+      res.status(502).json({ error: 'Gemini did not return audio.' });
+      return;
+    }
+
+    const wav = pcmToWav(Buffer.from(data, 'base64'));
+    fs.writeFileSync(cachePath, wav);
+    res.type('audio/wav').send(wav);
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Gemini voice generation failed.',
+    });
+  }
 });
 
 app.get('/api/agent/status', (_req, res) => {
