@@ -72,7 +72,7 @@ export default function App() {
     fetch('/api/session')
       .then((response) => response.json())
       .then(setSession)
-      .catch(() => setSession({ authenticated: false, email: '', adminEmail: 'nura22er@gmail.com', loginUrl: '/auth/admin' }));
+      .catch(() => setSession({ authenticated: false, email: '', adminEmail: 'm6dhhjffu@gmail.com', loginUrl: '/auth/admin' }));
   }, []);
 
   useEffect(() => {

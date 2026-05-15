@@ -35,7 +35,7 @@ const agentShortDuration = Number(process.env.AGENT_SHORT_DURATION_SECONDS || 18
 const staleProcessingMs = Number(process.env.AGENT_STALE_PROCESSING_MS || 2 * 60 * 1000);
 const agentDailyUploadLimit = Number(process.env.AGENT_DAILY_UPLOAD_LIMIT || 2);
 const agentDayTimezoneOffsetMinutes = Number(process.env.AGENT_DAY_TIMEZONE_OFFSET_MINUTES || 5 * 60);
-const adminEmail = (process.env.ADMIN_EMAIL || 'nura22er@gmail.com').toLowerCase();
+const adminEmail = (process.env.ADMIN_EMAIL || 'm6dhhjffu@gmail.com').toLowerCase();
 const sessionCookieName = 'creator_pro_admin';
 
 app.use(express.json({ limit: '2mb' }));
