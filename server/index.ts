@@ -85,6 +85,7 @@ interface AgentSourceCandidate {
   title: string;
   provider: string;
   identifier?: string;
+  generated?: boolean;
 }
 
 app.use(express.json({ limit: '2mb' }));
@@ -630,8 +631,89 @@ async function downloadDirectSource(url: string, destination: string) {
   await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), fs.createWriteStream(destination));
 }
 
+function runGeneratedGameSource(outputPath: string) {
+  return new Promise<void>((resolve, reject) => {
+    const sourceLabel = 'RETRO QUEST';
+    const filter = [
+      'drawgrid=width=80:height=80:thickness=2:color=0x26304d@0.35',
+      "drawbox=x='mod(t*190\\,720)-90':y='230+90*sin(t*2)':w=90:h=90:color=0x00e5ff@0.9:t=fill",
+      "drawbox=x='620-mod(t*140\\,720)':y='780+80*cos(t*2)':w=75:h=75:color=0xff2bd6@0.9:t=fill",
+      "drawbox=x='80+40*sin(t*3)':y='1040-mod(t*95\\,360)':w=560:h=18:color=0xfacc15@0.85:t=fill",
+      `drawtext=text='${sourceLabel}':x=(w-text_w)/2:y=110:fontsize=62:fontcolor=white:borderw=4:bordercolor=black`,
+      "drawtext=text='DODGE THE NEON BLOCKS':x=(w-text_w)/2:y=1180:fontsize=32:fontcolor=0xfacc15:borderw=3:bordercolor=black",
+      'hue=H=0.2*sin(t*1.8):s=1.35',
+      'format=yuv420p',
+    ].join(',');
+    const args = [
+      '-y',
+      '-f',
+      'lavfi',
+      '-t',
+      String(agentShortDuration),
+      '-i',
+      `color=c=0x101018:size=${agentOutputWidth}x${agentOutputHeight}:rate=30`,
+      '-f',
+      'lavfi',
+      '-t',
+      String(agentShortDuration),
+      '-i',
+      `sine=frequency=660:sample_rate=44100:duration=${agentShortDuration},volume=0.08`,
+      '-vf',
+      filter,
+      '-c:v',
+      'libx264',
+      '-threads',
+      '1',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '20',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+      '-shortest',
+      '-movflags',
+      '+faststart',
+      outputPath,
+    ];
+    const child = spawn('ffmpeg', args);
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.slice(-1200) || `ffmpeg generated source exited with code ${code}`));
+    });
+  });
+}
+
+async function queueGeneratedGameSource() {
+  const outputPath = path.join(sourceDir, `${Date.now()}-original-retro-game-source.mp4`);
+  const source = {
+    url: outputPath,
+    title: 'Original Retro Game Challenge',
+    provider: 'Creator Pro AI Generator',
+    identifier: 'original-retro-game',
+    generated: true,
+  };
+
+  recordAgentSource(source);
+  appendAgentLog('Generating original retro game/anime-style Shorts source with FFmpeg.');
+  await runGeneratedGameSource(outputPath);
+  return outputPath;
+}
+
 async function queueSourceFromUrl() {
   const allowWikimediaFallback = process.env.AGENT_ALLOW_WIKIMEDIA_FALLBACK === 'true';
+  const useGeneratedSource = process.env.AGENT_USE_GENERATED_GAME_SOURCE !== 'false';
+  if (useGeneratedSource) {
+    return queueGeneratedGameSource();
+  }
+
   const source =
     getNextAgentSourceUrl() ||
     (await discoverInternetArchiveComedySourceUrl()) ||
@@ -729,19 +811,29 @@ function buildUploadMetadata(sourcePath: string) {
   const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
   const rawTopic = String(profile.niche || '').trim();
   const topic = /automation|dashboard|creator pro|youtube ai/i.test(rawTopic) ? 'funny facts and useful shorts' : rawTopic || 'funny facts and useful shorts';
-  const currentSource = readAgentState().currentSource as { title?: string; provider?: string } | undefined;
+  const currentSource = readAgentState().currentSource as { title?: string; provider?: string; generated?: boolean } | undefined;
+  const isGeneratedGame = Boolean(currentSource?.generated || currentSource?.provider === 'Creator Pro AI Generator');
   const sourceTitle = String(currentSource?.title || '').replace(/[_-]+/g, ' ').trim();
   const titleSeed = path.basename(sourcePath, path.extname(sourcePath)).replace(/[-_]+/g, ' ');
-  const hooks = [
-    'People really used to do this',
-    'This old moment is still funny',
-    'A tiny piece of history',
-    'This is oddly satisfying',
-    'You probably have not seen this',
-    'Useful and funny in 18 seconds',
-    'The ending is worth it',
-    'This vintage clip feels unreal',
-  ];
+  const hooks = isGeneratedGame
+    ? [
+        'Can you beat this level',
+        'Retro game challenge in 18 seconds',
+        'This level gets faster',
+        'Neon dodge challenge',
+        'Anime arcade mini game',
+        'Watch the final move',
+      ]
+    : [
+        'People really used to do this',
+        'This old moment is still funny',
+        'A tiny piece of history',
+        'This is oddly satisfying',
+        'You probably have not seen this',
+        'Useful and funny in 18 seconds',
+        'The ending is worth it',
+        'This vintage clip feels unreal',
+      ];
   const hook = hooks[Math.abs(titleSeed.length + new Date().getMinutes()) % hooks.length];
   const titleContext = sourceTitle ? ` - ${sourceTitle}` : '';
   const title = `${hook}${titleContext} #shorts`.slice(0, 100);
@@ -755,21 +847,34 @@ function buildUploadMetadata(sourcePath: string) {
       `Topic: ${topic}`,
       `New short clips are posted daily.`,
       '',
-      '#shorts #funny #didyouknow',
+      isGeneratedGame ? '#shorts #gaming #anime #retrogaming' : '#shorts #funny #didyouknow',
     ].join('\n'),
-    tags: [
-      'shorts',
-      'funny shorts',
-      'did you know',
-      'interesting facts',
-      'useful shorts',
-      'vintage comedy',
-      'public domain',
-      'history shorts',
-      'viral shorts',
-      'daily shorts',
-      String(topic).toLowerCase(),
-    ].filter(Boolean),
+    tags: (isGeneratedGame
+      ? [
+          'shorts',
+          'gaming shorts',
+          'anime style',
+          'retro gaming',
+          'arcade game',
+          'mobile game',
+          'game challenge',
+          'neon game',
+          'satisfying shorts',
+          'viral shorts',
+        ]
+      : [
+          'shorts',
+          'funny shorts',
+          'did you know',
+          'interesting facts',
+          'useful shorts',
+          'vintage comedy',
+          'public domain',
+          'history shorts',
+          'viral shorts',
+          'daily shorts',
+          String(topic).toLowerCase(),
+        ]).filter(Boolean),
   };
 }
 
