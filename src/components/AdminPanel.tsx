@@ -64,6 +64,8 @@ interface AgentStatus {
   startedAt: string | null;
   updatedAt: string;
   jobsCompleted: number;
+  queueCount: number;
+  logs: { at: string; message: string }[];
   error?: string;
 }
 
@@ -71,6 +73,7 @@ export default function AdminPanel() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [agent, setAgent] = useState<AgentStatus | null>(null);
   const [statusError, setStatusError] = useState('');
+  const [sourceUploadStatus, setSourceUploadStatus] = useState('');
 
   async function loadStatus() {
     try {
@@ -98,6 +101,24 @@ export default function AdminPanel() {
   async function pauseAgent() {
     const response = await fetch('/api/agent/pause', { method: 'POST' });
     setAgent(await response.json());
+  }
+
+  async function uploadSourceVideo(file?: File) {
+    if (!file) return;
+    setSourceUploadStatus('Uploading source video to agent queue...');
+    const formData = new FormData();
+    formData.append('video', file);
+    const response = await fetch('/api/agent/source', {
+      method: 'POST',
+      body: formData,
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      setSourceUploadStatus(result.error || 'Source upload failed.');
+      return;
+    }
+    setSourceUploadStatus(`Queued: ${result.fileName}`);
+    await loadAgentStatus();
   }
 
   async function disconnectYouTube() {
@@ -207,6 +228,9 @@ export default function AdminPanel() {
               <p className="text-sm text-zinc-400 max-w-3xl">
                 {agent?.lastAction || 'AI agent status yuklanmoqda...'}
               </p>
+              <p className="text-xs text-zinc-500 mt-2">
+                Queue: {agent?.queueCount ?? 0} video • Completed: {agent?.jobsCompleted ?? 0} upload
+              </p>
               {agent?.error && <p className="text-xs text-red-400 mt-2">{agent.error}</p>}
             </div>
           </div>
@@ -227,6 +251,43 @@ export default function AdminPanel() {
                 Ishga tushirish
               </button>
             )}
+          </div>
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <label className="xl:col-span-1 block border border-dashed border-zinc-700 rounded-xl p-4 bg-zinc-950/40 hover:border-red-500/50 transition-all cursor-pointer">
+            <input
+              type="file"
+              accept="video/*"
+              className="sr-only"
+              onChange={(event) => uploadSourceVideo(event.target.files?.[0])}
+            />
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-red-600/10 text-red-500">
+                <UploadCloud className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-white">Add source video</p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">Agent edits and uploads private draft</p>
+              </div>
+            </div>
+            {sourceUploadStatus && <p className="text-[10px] text-zinc-400 mt-3">{sourceUploadStatus}</p>}
+          </label>
+
+          <div className="xl:col-span-2 bg-zinc-950/50 border border-zinc-800 rounded-xl p-4 max-h-40 overflow-y-auto">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-bold text-white">Agent Logs</p>
+              <button onClick={loadAgentStatus} className="text-[10px] text-zinc-500 hover:text-white">Refresh</button>
+            </div>
+            <div className="space-y-2">
+              {(agent?.logs || []).slice(0, 8).map((log) => (
+                <div key={`${log.at}-${log.message}`} className="text-[11px] text-zinc-400 flex gap-2">
+                  <span className="text-zinc-600 font-mono shrink-0">{new Date(log.at).toLocaleTimeString()}</span>
+                  <span>{log.message}</span>
+                </div>
+              ))}
+              {!agent?.logs?.length && <p className="text-[11px] text-zinc-600">No agent logs yet.</p>}
+            </div>
           </div>
         </div>
       </section>

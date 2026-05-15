@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { spawn } from 'node:child_process';
 import multer from 'multer';
 import { google } from 'googleapis';
 import dotenv from 'dotenv';
@@ -15,6 +16,11 @@ const dataDir = path.resolve('.data');
 const tokenPath = path.join(dataDir, 'youtube-token.json');
 const profilePath = path.join(dataDir, 'profile.json');
 const agentPath = path.join(dataDir, 'agent.json');
+const agentLogPath = path.join(dataDir, 'agent-log.json');
+const sourceDir = path.resolve('uploads/source');
+const processingDir = path.resolve('uploads/processing');
+const processedDir = path.resolve('uploads/processed');
+const failedDir = path.resolve('uploads/failed');
 const distDir = path.resolve('dist');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 1024 } });
 
@@ -34,6 +40,10 @@ function readClientSecrets() {
 
 function ensureDataDir() {
   fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.mkdirSync(processingDir, { recursive: true });
+  fs.mkdirSync(processedDir, { recursive: true });
+  fs.mkdirSync(failedDir, { recursive: true });
 }
 
 function getOAuthClient() {
@@ -72,6 +82,7 @@ function getStatus() {
 }
 
 function readAgentState() {
+  ensureDataDir();
   if (!fs.existsSync(agentPath)) {
     return {
       running: false,
@@ -80,10 +91,16 @@ function readAgentState() {
       startedAt: null,
       updatedAt: new Date().toISOString(),
       jobsCompleted: 0,
+      queueCount: listSourceVideos().length,
+      logs: readAgentLogs(),
     };
   }
 
-  return JSON.parse(fs.readFileSync(agentPath, 'utf8'));
+  return {
+    ...JSON.parse(fs.readFileSync(agentPath, 'utf8')),
+    queueCount: listSourceVideos().length,
+    logs: readAgentLogs(),
+  };
 }
 
 function writeAgentState(nextState: Record<string, unknown>) {
@@ -96,6 +113,165 @@ function writeAgentState(nextState: Record<string, unknown>) {
   };
   fs.writeFileSync(agentPath, JSON.stringify(state, null, 2));
   return state;
+}
+
+function readAgentLogs() {
+  if (!fs.existsSync(agentLogPath)) return [];
+  return JSON.parse(fs.readFileSync(agentLogPath, 'utf8'));
+}
+
+function appendAgentLog(message: string) {
+  ensureDataDir();
+  const logs = readAgentLogs();
+  logs.unshift({ at: new Date().toISOString(), message });
+  fs.writeFileSync(agentLogPath, JSON.stringify(logs.slice(0, 80), null, 2));
+}
+
+function listSourceVideos() {
+  ensureDataDir();
+  const allowed = new Set(['.mp4', '.mov', '.webm', '.mkv']);
+  return fs
+    .readdirSync(sourceDir)
+    .filter((name) => allowed.has(path.extname(name).toLowerCase()))
+    .map((name) => path.join(sourceDir, name));
+}
+
+function safeFileName(name: string) {
+  const extension = path.extname(name) || '.mp4';
+  const base = path.basename(name, extension).replace(/[^a-z0-9-_]+/gi, '-').slice(0, 80) || 'source-video';
+  return `${Date.now()}-${base}${extension.toLowerCase()}`;
+}
+
+function runFfmpeg(inputPath: string, outputPath: string) {
+  return new Promise<void>((resolve, reject) => {
+    const args = [
+      '-y',
+      '-i',
+      inputPath,
+      '-t',
+      '60',
+      '-vf',
+      'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,eq=contrast=1.08:saturation=1.18,format=yuv420p',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+      outputPath,
+    ];
+    const child = spawn('ffmpeg', args);
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.slice(-1200) || `ffmpeg exited with code ${code}`));
+    });
+  });
+}
+
+function buildUploadMetadata(sourcePath: string) {
+  const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
+  const topic = profile.niche || 'AI automation';
+  const titleSeed = path.basename(sourcePath, path.extname(sourcePath)).replace(/[-_]+/g, ' ');
+  const title = `${titleSeed} | ${topic} #shorts`.slice(0, 100);
+
+  return {
+    title,
+    description: [
+      `AI edited and uploaded by Creator Pro Dashboard.`,
+      `Topic: ${topic}`,
+      `Language: ${profile.language || 'Uzbek'}`,
+      '',
+      '#shorts #ai #creatorpro',
+    ].join('\n'),
+    tags: ['shorts', 'ai', 'creatorpro', String(topic).toLowerCase()].filter(Boolean),
+  };
+}
+
+async function uploadVideoPath(videoPath: string, metadata: { title: string; description: string; tags: string[] }) {
+  const client = getOAuthClient();
+
+  if (!client || !fs.existsSync(tokenPath)) {
+    throw new Error('YouTube account is not connected.');
+  }
+
+  const youtube = google.youtube({ version: 'v3', auth: client });
+  const response = await youtube.videos.insert({
+    part: ['snippet', 'status'],
+    requestBody: {
+      snippet: {
+        title: metadata.title,
+        description: metadata.description,
+        tags: metadata.tags,
+        categoryId: '22',
+      },
+      status: {
+        privacyStatus: 'private',
+        selfDeclaredMadeForKids: false,
+      },
+    },
+    media: {
+      body: fs.createReadStream(videoPath),
+      mimeType: 'video/mp4',
+    },
+  });
+
+  return response.data.id;
+}
+
+let agentWorking = false;
+
+async function processNextAgentJob() {
+  const state = readAgentState();
+  if (!state.running || agentWorking) return;
+
+  const [nextSource] = listSourceVideos();
+  if (!nextSource) {
+    writeAgentState({ lastAction: 'AI agent is running. Waiting for source videos in uploads/source.' });
+    return;
+  }
+
+  agentWorking = true;
+  const processingPath = path.join(processingDir, path.basename(nextSource));
+  const outputPath = path.join(processedDir, `${path.basename(nextSource, path.extname(nextSource))}-short.mp4`);
+
+  try {
+    fs.renameSync(nextSource, processingPath);
+    appendAgentLog(`Started editing ${path.basename(processingPath)}.`);
+    writeAgentState({ mode: 'editing', lastAction: `Editing ${path.basename(processingPath)} with FFmpeg.` });
+
+    await runFfmpeg(processingPath, outputPath);
+
+    const metadata = buildUploadMetadata(processingPath);
+    appendAgentLog(`Uploading ${path.basename(outputPath)} to YouTube as private.`);
+    writeAgentState({ mode: 'uploading', lastAction: `Uploading ${metadata.title}` });
+
+    const videoId = await uploadVideoPath(outputPath, metadata);
+    appendAgentLog(`Uploaded private video to YouTube. Video ID: ${videoId}`);
+    fs.rmSync(processingPath, { force: true });
+    writeAgentState({
+      mode: 'running',
+      jobsCompleted: Number(state.jobsCompleted || 0) + 1,
+      lastAction: `Uploaded private video. Video ID: ${videoId}`,
+      error: '',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown worker error';
+    appendAgentLog(`Worker error: ${message}`);
+    if (fs.existsSync(processingPath)) {
+      fs.renameSync(processingPath, path.join(failedDir, path.basename(processingPath)));
+    }
+    writeAgentState({ mode: 'error', running: false, lastAction: 'AI agent paused after an error.', error: message });
+  } finally {
+    agentWorking = false;
+  }
 }
 
 app.get('/api/config/status', (_req, res) => {
@@ -118,8 +294,11 @@ app.post('/api/agent/start', (_req, res) => {
     running: true,
     mode: 'running',
     startedAt: new Date().toISOString(),
-    lastAction: 'AI agent started. Scanning safe sources, preparing metadata, and waiting for approved video inputs.',
+    lastAction: 'AI agent started. Scanning source queue, editing videos, and uploading private drafts.',
+    error: '',
   });
+  appendAgentLog('AI agent started by admin.');
+  void processNextAgentJob();
 
   res.json(state);
 });
@@ -130,8 +309,25 @@ app.post('/api/agent/pause', (_req, res) => {
     mode: 'paused',
     lastAction: 'AI agent paused by admin.',
   });
+  appendAgentLog('AI agent paused by admin.');
 
   res.json(state);
+});
+
+app.post('/api/agent/source', upload.single('video'), (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: 'Video file is required.' });
+    return;
+  }
+
+  ensureDataDir();
+  const fileName = safeFileName(req.file.originalname);
+  const destination = path.join(sourceDir, fileName);
+  fs.writeFileSync(destination, req.file.buffer);
+  appendAgentLog(`Source video added to queue: ${fileName}`);
+  writeAgentState({ lastAction: `Source video queued: ${fileName}` });
+  void processNextAgentJob();
+  res.json({ ok: true, fileName, queueCount: listSourceVideos().length });
 });
 
 app.get('/api/profile', (_req, res) => {
@@ -276,3 +472,9 @@ app.post('/api/youtube/upload', upload.single('video'), async (req, res) => {
 app.listen(port, () => {
   console.log(`Creator Pro API server running on http://localhost:${port}`);
 });
+
+setInterval(() => {
+  void processNextAgentJob();
+}, 30000);
+
+void processNextAgentJob();
