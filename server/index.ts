@@ -37,6 +37,14 @@ const agentDailyUploadLimit = Number(process.env.AGENT_DAILY_UPLOAD_LIMIT || 2);
 const agentDayTimezoneOffsetMinutes = Number(process.env.AGENT_DAY_TIMEZONE_OFFSET_MINUTES || 5 * 60);
 const adminEmail = (process.env.ADMIN_EMAIL || 'm6dhhjffu@gmail.com').toLowerCase();
 const sessionCookieName = 'creator_pro_admin';
+const agentSourceMaxBytes = Number(process.env.AGENT_SOURCE_MAX_BYTES || 280 * 1024 * 1024);
+const archiveComedyIdentifiers = [
+  'eddie_cantor_1923',
+  'the-sawmill',
+  'silent-his-musical-career',
+  'his-musical-career-1914',
+  'his-musical-career-1914-directed-by-charles-chaplin',
+];
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(distDir));
@@ -315,6 +323,60 @@ function getNextAgentSourceUrl() {
   return url;
 }
 
+async function getInternetArchiveDownloadUrl(identifier: string) {
+  const response = await fetch(`https://archive.org/metadata/${encodeURIComponent(identifier)}`, {
+    headers: { 'User-Agent': 'CreatorProDashboard/1.0 (public-domain comedy discovery)' },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Internet Archive metadata failed with ${response.status}`);
+  }
+
+  const data = await response.json();
+  const files = (data.files || []) as Array<{ name?: string; format?: string; size?: string }>;
+  const videoFile = files
+    .filter((file) => /\.(mp4|webm|ogv)$/i.test(file.name || ''))
+    .filter((file) => Number(file.size || 0) > 0 && Number(file.size || 0) <= agentSourceMaxBytes)
+    .sort((a, b) => {
+      const aName = String(a.name || '').toLowerCase();
+      const bName = String(b.name || '').toLowerCase();
+      const aScore = (aName.endsWith('.mp4') ? 0 : 10) + (String(a.format || '').toLowerCase().includes('h.264') ? 0 : 2);
+      const bScore = (bName.endsWith('.mp4') ? 0 : 10) + (String(b.format || '').toLowerCase().includes('h.264') ? 0 : 2);
+      return aScore - bScore || Number(a.size || 0) - Number(b.size || 0);
+    })[0];
+
+  if (!videoFile?.name) {
+    return null;
+  }
+
+  appendAgentLog(`Selected public-domain comedy source: ${data.metadata?.title || identifier}`);
+  return `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(videoFile.name)}`;
+}
+
+async function discoverInternetArchiveComedySourceUrl() {
+  const cursor = readAgentSourceCursor();
+  const preferredIdentifiers = String(process.env.AGENT_ARCHIVE_COMEDY_IDS || '')
+    .split(/[\n,]+/)
+    .map((identifier) => identifier.trim())
+    .filter(Boolean);
+  const identifiers = preferredIdentifiers.length ? preferredIdentifiers : archiveComedyIdentifiers;
+
+  for (let index = 0; index < identifiers.length; index += 1) {
+    const identifier = identifiers[(cursor + index) % identifiers.length];
+    try {
+      const sourceUrl = await getInternetArchiveDownloadUrl(identifier);
+      if (sourceUrl) {
+        writeAgentSourceCursor(cursor + index + 1);
+        return sourceUrl;
+      }
+    } catch (error) {
+      appendAgentLog(`Internet Archive source skipped: ${identifier} (${error instanceof Error ? error.message : 'unknown error'})`);
+    }
+  }
+
+  return null;
+}
+
 async function discoverWikimediaSourceUrl() {
   const cursor = readAgentSourceCursor();
   const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
@@ -418,7 +480,7 @@ async function downloadDirectSource(url: string, destination: string) {
 }
 
 async function queueSourceFromUrl() {
-  const sourceUrl = getNextAgentSourceUrl() || (await discoverWikimediaSourceUrl());
+  const sourceUrl = getNextAgentSourceUrl() || (await discoverInternetArchiveComedySourceUrl()) || (await discoverWikimediaSourceUrl());
 
   if (!sourceUrl) {
     return null;
