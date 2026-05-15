@@ -42,6 +42,15 @@ interface YouTubeSummary {
   updatedAt: string;
 }
 
+interface NotificationItem {
+  id: string;
+  at: string;
+  type: string;
+  title: string;
+  message: string;
+  read: boolean;
+}
+
 const emptyProfile: UserProfile = {
   ownerName: '',
   channelName: '',
@@ -58,6 +67,8 @@ export default function App() {
   const [session, setSession] = useState<SessionState | null>(null);
   const [summary, setSummary] = useState<YouTubeSummary | null>(null);
   const [summaryError, setSummaryError] = useState('');
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [profile, setProfileState] = useState<UserProfile>(() => {
     try {
       const stored = localStorage.getItem('creator-pro-profile');
@@ -117,6 +128,19 @@ export default function App() {
   useEffect(() => {
     if (!session?.authenticated) return;
 
+    const loadNotifications = () => {
+      fetch('/api/notifications')
+        .then((response) => {
+          if (!response.ok) throw new Error('Notifications unavailable');
+          return response.json();
+        })
+        .then((data) => {
+          setNotifications(data.notifications || []);
+          setUnreadCount(Number(data.unreadCount || 0));
+        })
+        .catch(() => null);
+    };
+
     const loadSummary = () => {
       fetch('/api/youtube/summary')
         .then((response) => {
@@ -128,12 +152,19 @@ export default function App() {
           setSummaryError('');
         })
         .catch((error) => setSummaryError(error instanceof Error ? error.message : 'YouTube statistics not available'));
+      loadNotifications();
     };
 
     loadSummary();
     const interval = window.setInterval(loadSummary, 60000);
     return () => window.clearInterval(interval);
   }, [session?.authenticated]);
+
+  async function readNotifications() {
+    setUnreadCount(0);
+    await fetch('/api/notifications/read', { method: 'POST' }).catch(() => null);
+    setNotifications((items) => items.map((item) => ({ ...item, read: true })));
+  }
 
   useEffect(() => {
     if (sessionStorage.getItem('creator-pro-welcome-spoken')) return;
@@ -211,6 +242,9 @@ export default function App() {
             profile={profile}
             onCreate={() => setActiveTab('AI Editor')}
             onOpenSettings={() => setActiveTab('Settings')}
+            notifications={notifications}
+            unreadCount={unreadCount}
+            onReadNotifications={readNotifications}
           />
         )}
         

@@ -20,6 +20,8 @@ const profilePath = path.join(dataDir, 'profile.json');
 const agentPath = path.join(dataDir, 'agent.json');
 const agentLogPath = path.join(dataDir, 'agent-log.json');
 const agentSourceCursorPath = path.join(dataDir, 'agent-source-cursor.json');
+const notificationsPath = path.join(dataDir, 'notifications.json');
+const youtubeSummarySnapshotPath = path.join(dataDir, 'youtube-summary-snapshot.json');
 const voiceDir = path.join(dataDir, 'voice');
 const sourceDir = path.resolve('uploads/source');
 const processingDir = path.resolve('uploads/processing');
@@ -259,6 +261,68 @@ function appendAgentLog(message: string) {
   const logs = readAgentLogs();
   logs.unshift({ at: new Date().toISOString(), message });
   fs.writeFileSync(agentLogPath, JSON.stringify(logs.slice(0, 80), null, 2));
+}
+
+function readNotifications() {
+  if (!fs.existsSync(notificationsPath)) return [];
+  return JSON.parse(fs.readFileSync(notificationsPath, 'utf8')) as Array<{
+    id: string;
+    at: string;
+    type: string;
+    title: string;
+    message: string;
+    read: boolean;
+  }>;
+}
+
+function appendNotification(type: string, title: string, message: string) {
+  ensureDataDir();
+  const notifications = readNotifications();
+  notifications.unshift({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    at: new Date().toISOString(),
+    type,
+    title,
+    message,
+    read: false,
+  });
+  fs.writeFileSync(notificationsPath, JSON.stringify(notifications.slice(0, 80), null, 2));
+}
+
+function trackYouTubeSummaryNotifications(summary: {
+  subscribers: number;
+  totalViews: number;
+  recentLikes: number;
+  recentComments: number;
+}) {
+  const previous = fs.existsSync(youtubeSummarySnapshotPath)
+    ? JSON.parse(fs.readFileSync(youtubeSummarySnapshotPath, 'utf8'))
+    : null;
+
+  if (previous) {
+    const subscriberDelta = summary.subscribers - Number(previous.subscribers || 0);
+    const viewDelta = summary.totalViews - Number(previous.totalViews || 0);
+    const likeDelta = summary.recentLikes - Number(previous.recentLikes || 0);
+    const commentDelta = summary.recentComments - Number(previous.recentComments || 0);
+
+    if (subscriberDelta > 0) {
+      appendNotification('subscriber', 'New subscriber', `+${subscriberDelta} subscriber. Total: ${summary.subscribers}.`);
+    }
+    if (likeDelta > 0) {
+      appendNotification('like', 'New likes', `+${likeDelta} likes on recent videos.`);
+    }
+    if (commentDelta > 0) {
+      appendNotification('comment', 'New comments', `+${commentDelta} comments on recent videos.`);
+    }
+    if (viewDelta >= 100) {
+      appendNotification('views', 'Views are growing', `+${viewDelta} total views since the last scan.`);
+    }
+    if (summary.totalViews >= 10000 && Number(previous.totalViews || 0) < 10000) {
+      appendNotification('milestone', '10K views reached', 'Channel total views crossed 10,000.');
+    }
+  }
+
+  fs.writeFileSync(youtubeSummarySnapshotPath, JSON.stringify({ ...summary, updatedAt: new Date().toISOString() }, null, 2));
 }
 
 function listVideosInDir(directory: string) {
@@ -573,11 +637,12 @@ function buildUploadMetadata(sourcePath: string) {
   const topic = profile.niche || 'funny shorts';
   const titleSeed = path.basename(sourcePath, path.extname(sourcePath)).replace(/[-_]+/g, ' ');
   const hooks = [
-    'Wait for the ending',
-    'This moment was unexpected',
-    'Short funny moment',
-    'That timing was perfect',
-    'Quick laugh of the day',
+    'Wait for the unexpected ending',
+    'This old comedy moment still works',
+    'The timing is perfect',
+    'Vintage comedy in 18 seconds',
+    'This silent comedy bit is wild',
+    'A quick laugh before you scroll',
   ];
   const hook = hooks[Math.abs(titleSeed.length + new Date().getMinutes()) % hooks.length];
   const title = `${hook} | ${topic} #shorts`.slice(0, 100);
@@ -586,12 +651,13 @@ function buildUploadMetadata(sourcePath: string) {
     title,
     description: [
       `Short, AI-edited public-domain/rights-safe clip uploaded by Creator Pro Dashboard.`,
+      `If this made you smile, like and subscribe for more daily comedy shorts.`,
       `Topic: ${topic}`,
       `Language: ${profile.language || 'Uzbek'}`,
       '',
-      '#shorts #funny #comedy #ai #creatorpro',
+      '#shorts #funny #comedy #viral #trending #fyp #creatorpro',
     ].join('\n'),
-    tags: ['shorts', 'funny', 'comedy', 'ai', 'creatorpro', String(topic).toLowerCase()].filter(Boolean),
+    tags: ['shorts', 'funny', 'comedy', 'viral', 'trending', 'fyp', 'creatorpro', String(topic).toLowerCase()].filter(Boolean),
   };
 }
 
@@ -784,6 +850,20 @@ app.get('/api/session', (req, res) => {
     adminEmail,
     loginUrl: '/auth/admin',
   });
+});
+
+app.get('/api/notifications', requireAdmin, (_req, res) => {
+  const notifications = readNotifications();
+  res.json({
+    unreadCount: notifications.filter((notification) => !notification.read).length,
+    notifications,
+  });
+});
+
+app.post('/api/notifications/read', requireAdmin, (_req, res) => {
+  const notifications = readNotifications().map((notification) => ({ ...notification, read: true }));
+  fs.writeFileSync(notificationsPath, JSON.stringify(notifications, null, 2));
+  res.json({ ok: true, unreadCount: 0, notifications });
 });
 
 app.get('/api/voice/welcome', async (_req, res) => {
@@ -1104,7 +1184,7 @@ app.get('/api/youtube/summary', requireAdmin, async (_req, res) => {
       }
     }
 
-    res.json({
+    const summary = {
       channelTitle: channel?.snippet?.title || '',
       subscribers: Number(channel?.statistics?.subscriberCount || 0),
       subscribersHidden: Boolean(channel?.statistics?.hiddenSubscriberCount),
@@ -1118,7 +1198,10 @@ app.get('/api/youtube/summary', requireAdmin, async (_req, res) => {
       avgWatchTime: null,
       chart,
       updatedAt: new Date().toISOString(),
-    });
+    };
+
+    trackYouTubeSummaryNotifications(summary);
+    res.json(summary);
   } catch (error) {
     console.error('Could not load YouTube summary', error);
     res.status(502).json({ error: 'YouTube statistics could not be loaded. Reconnect YouTube if this continues.' });

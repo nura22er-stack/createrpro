@@ -1,17 +1,30 @@
-import React from 'react';
-import { Search, Bell, User, Plus, SearchIcon } from 'lucide-react';
+import React, { useState } from 'react';
+import { Search, Bell, User, Plus } from 'lucide-react';
 import { motion } from 'motion/react';
 import { UserProfile } from '../types';
+
+interface NotificationItem {
+  id: string;
+  at: string;
+  type: string;
+  title: string;
+  message: string;
+  read: boolean;
+}
 
 interface DashboardHeaderProps {
   profile: UserProfile;
   onCreate: () => void;
   onOpenSettings: () => void;
+  notifications: NotificationItem[];
+  unreadCount: number;
+  onReadNotifications: () => void;
 }
 
-export default function DashboardHeader({ profile, onCreate, onOpenSettings }: DashboardHeaderProps) {
+export default function DashboardHeader({ profile, onCreate, onOpenSettings, notifications, unreadCount, onReadNotifications }: DashboardHeaderProps) {
   const displayName = profile.ownerName || 'Your name';
   const role = profile.channelName || 'Your channel';
+  const [openNotifications, setOpenNotifications] = useState(false);
 
   return (
     <header className="min-h-16 md:h-20 border-b border-zinc-800/50 sticky top-0 bg-zinc-950/80 backdrop-blur-md z-10 px-4 md:px-8 py-3 md:py-0 flex items-center justify-between gap-3">
@@ -27,13 +40,43 @@ export default function DashboardHeader({ profile, onCreate, onOpenSettings }: D
       </div>
 
       <div className="flex items-center gap-2 md:gap-4 ml-auto">
-        <button
-          onClick={() => window.alert('No new notifications.')}
-          className="p-2.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl transition-all relative"
-        >
-          <Bell className="w-5 h-5" />
-          <span className="absolute top-2.5 right-2.5 w-2 h-2 bg-red-600 rounded-full border-2 border-zinc-950" />
-        </button>
+        <div className="relative">
+          <button
+            onClick={() => {
+              setOpenNotifications((value) => !value);
+              if (unreadCount) onReadNotifications();
+            }}
+            className="p-2.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl transition-all relative"
+          >
+            <Bell className="w-5 h-5" />
+            {unreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 bg-red-600 rounded-full border-2 border-zinc-950 text-[10px] text-white font-bold flex items-center justify-center">
+                {unreadCount > 9 ? '9+' : unreadCount}
+              </span>
+            )}
+          </button>
+
+          {openNotifications && (
+            <div className="absolute right-0 top-12 w-[min(22rem,calc(100vw-2rem))] glass-panel rounded-2xl p-3 shadow-2xl z-50">
+              <div className="flex items-center justify-between px-2 pb-2 border-b border-zinc-800">
+                <p className="text-sm font-bold text-white">Notifications</p>
+                <span className="text-[10px] text-zinc-500 font-mono">{notifications.length}</span>
+              </div>
+              <div className="max-h-80 overflow-y-auto py-2 space-y-2">
+                {notifications.slice(0, 10).map((notification) => (
+                  <div key={notification.id} className="bg-zinc-950/60 border border-zinc-800 rounded-xl p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-bold text-white">{notification.title}</p>
+                      <span className="text-[10px] text-zinc-600 shrink-0">{new Date(notification.at).toLocaleTimeString()}</span>
+                    </div>
+                    <p className="text-xs text-zinc-400 mt-1">{notification.message}</p>
+                  </div>
+                ))}
+                {!notifications.length && <p className="text-xs text-zinc-500 p-3">Hali yangi like, view yoki subscriber bildirishnomasi yo‘q.</p>}
+              </div>
+            </div>
+          )}
+        </div>
         
         <div className="hidden sm:block h-8 w-px bg-zinc-800 mx-2" />
         
