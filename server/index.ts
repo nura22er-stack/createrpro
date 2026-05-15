@@ -32,6 +32,8 @@ const agentOutputWidth = Number(process.env.AGENT_OUTPUT_WIDTH || 720);
 const agentOutputHeight = Number(process.env.AGENT_OUTPUT_HEIGHT || 1280);
 const agentShortDuration = Number(process.env.AGENT_SHORT_DURATION_SECONDS || 18);
 const staleProcessingMs = Number(process.env.AGENT_STALE_PROCESSING_MS || 2 * 60 * 1000);
+const agentDailyUploadLimit = Number(process.env.AGENT_DAILY_UPLOAD_LIMIT || 2);
+const agentDayTimezoneOffsetMinutes = Number(process.env.AGENT_DAY_TIMEZONE_OFFSET_MINUTES || 5 * 60);
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(distDir));
@@ -145,6 +147,22 @@ function writeAgentState(nextState: Record<string, unknown>) {
   };
   fs.writeFileSync(agentPath, JSON.stringify(state, null, 2));
   return state;
+}
+
+function getAgentDayKey(date = new Date()) {
+  const shifted = new Date(date.getTime() + agentDayTimezoneOffsetMinutes * 60 * 1000);
+  return shifted.toISOString().slice(0, 10);
+}
+
+function getNextAgentDayStart() {
+  const now = new Date();
+  const shifted = new Date(now.getTime() + agentDayTimezoneOffsetMinutes * 60 * 1000);
+  shifted.setUTCHours(24, 0, 0, 0);
+  return new Date(shifted.getTime() - agentDayTimezoneOffsetMinutes * 60 * 1000);
+}
+
+function getDailyUploadCount(state: Record<string, unknown>) {
+  return state.dailyUploadDay === getAgentDayKey() ? Number(state.dailyUploadCount || 0) : 0;
 }
 
 function readAgentLogs() {
@@ -494,6 +512,19 @@ async function processNextAgentJob() {
 
   cleanupStaleProcessingFiles();
 
+  const dailyUploadCount = getDailyUploadCount(state);
+  if (dailyUploadCount >= agentDailyUploadLimit) {
+    const nextRunAt = getNextAgentDayStart().toISOString();
+    writeAgentState({
+      mode: 'running',
+      dailyUploadDay: getAgentDayKey(),
+      dailyUploadCount,
+      nextRunAt,
+      lastAction: `Daily upload limit reached (${dailyUploadCount}/${agentDailyUploadLimit}). AI will wait until ${nextRunAt}.`,
+    });
+    return;
+  }
+
   const processingFiles = listVideosInDir(processingDir);
   if (processingFiles.length) {
     writeAgentState({
@@ -569,12 +600,19 @@ async function processNextAgentJob() {
     appendAgentLog(`Uploaded video to YouTube. Video ID: ${videoId}`);
     fs.rmSync(processingPath, { force: true });
     const lastUploadAt = new Date().toISOString();
+    const nextDailyCount = getDailyUploadCount(readAgentState()) + 1;
+    const nextRunAt = nextDailyCount >= agentDailyUploadLimit ? getNextAgentDayStart().toISOString() : getNextAgentRunAt(lastUploadAt);
     writeAgentState({
       mode: 'running',
       jobsCompleted: Number(state.jobsCompleted || 0) + 1,
-      lastAction: `Uploaded video. Video ID: ${videoId}`,
+      lastAction:
+        nextDailyCount >= agentDailyUploadLimit
+          ? `Uploaded video. Daily limit reached (${nextDailyCount}/${agentDailyUploadLimit}).`
+          : `Uploaded video. Video ID: ${videoId}`,
       lastUploadAt,
-      nextRunAt: getNextAgentRunAt(lastUploadAt),
+      dailyUploadDay: getAgentDayKey(new Date(lastUploadAt)),
+      dailyUploadCount: nextDailyCount,
+      nextRunAt,
       error: '',
     });
   } catch (error) {
@@ -683,7 +721,7 @@ app.post('/api/agent/start', (_req, res) => {
     mode: 'running',
     startedAt: new Date().toISOString(),
     nextRunAt: getNextAgentRunAt(readAgentState().lastUploadAt),
-    lastAction: 'AI agent started. It will upload one public video every 5 minutes while running.',
+    lastAction: `AI agent started. It will upload up to ${agentDailyUploadLimit} public videos per day.`,
     error: '',
   });
   appendAgentLog('AI agent started by admin.');
