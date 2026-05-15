@@ -57,8 +57,19 @@ interface ServerStatus {
   redirectUri: string;
 }
 
+interface AgentStatus {
+  running: boolean;
+  mode: string;
+  lastAction: string;
+  startedAt: string | null;
+  updatedAt: string;
+  jobsCompleted: number;
+  error?: string;
+}
+
 export default function AdminPanel() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [agent, setAgent] = useState<AgentStatus | null>(null);
   const [statusError, setStatusError] = useState('');
 
   async function loadStatus() {
@@ -73,6 +84,22 @@ export default function AdminPanel() {
     }
   }
 
+  async function loadAgentStatus() {
+    const response = await fetch('/api/agent/status');
+    setAgent(await response.json());
+  }
+
+  async function startAgent() {
+    const response = await fetch('/api/agent/start', { method: 'POST' });
+    const nextAgent = await response.json();
+    setAgent(nextAgent);
+  }
+
+  async function pauseAgent() {
+    const response = await fetch('/api/agent/pause', { method: 'POST' });
+    setAgent(await response.json());
+  }
+
   async function disconnectYouTube() {
     await fetch('/auth/youtube/disconnect', { method: 'POST' });
     await loadStatus();
@@ -80,6 +107,9 @@ export default function AdminPanel() {
 
   useEffect(() => {
     loadStatus();
+    loadAgentStatus();
+    const interval = window.setInterval(loadAgentStatus, 10000);
+    return () => window.clearInterval(interval);
   }, []);
 
   const liveAuditItems = useMemo(() => [
@@ -156,6 +186,50 @@ export default function AdminPanel() {
           Backend server topilmadi. `npm run dev:full` ni ishga tushiring yoki `npm run dev:server` ni alohida ko‘taring.
         </div>
       )}
+
+      <section className="glass-panel p-6 rounded-2xl border-red-500/20 bg-gradient-to-br from-red-600/10 to-transparent">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-5">
+          <div className="flex items-start gap-4">
+            <div className={`p-3 rounded-xl border ${agent?.running ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-zinc-900 border-zinc-800 text-red-500'}`}>
+              <WandSparkles className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-3 mb-1">
+                <h2 className="font-display font-bold text-xl text-white">AI Video Agent</h2>
+                <span className={`text-[10px] font-mono uppercase tracking-widest px-3 py-1 rounded-full border ${
+                  agent?.running
+                    ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+                    : 'text-zinc-400 bg-zinc-900 border-zinc-800'
+                }`}>
+                  {agent?.running ? 'Running' : 'Paused'}
+                </span>
+              </div>
+              <p className="text-sm text-zinc-400 max-w-3xl">
+                {agent?.lastAction || 'AI agent status yuklanmoqda...'}
+              </p>
+              {agent?.error && <p className="text-xs text-red-400 mt-2">{agent.error}</p>}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {agent?.running ? (
+              <button
+                onClick={pauseAgent}
+                className="bg-zinc-950 border border-zinc-800 hover:bg-zinc-900 text-white px-5 py-3 rounded-xl text-sm font-bold transition-all"
+              >
+                Pause AI
+              </button>
+            ) : (
+              <button
+                onClick={startAgent}
+                className="bg-red-600 hover:bg-red-700 text-white px-5 py-3 rounded-xl text-sm font-bold shadow-lg shadow-red-600/20 transition-all"
+              >
+                Ishga tushirish
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <section className="glass-panel p-6 rounded-2xl xl:col-span-2">

@@ -84,7 +84,13 @@ export default function Sidebar({ activeTab, setActiveTab }: SidebarProps) {
           )} />
           Settings
         </button>
-        <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-zinc-400 hover:bg-red-500/10 hover:text-red-400 text-sm font-medium transition-all group">
+        <button
+          onClick={async () => {
+            await fetch('/auth/youtube/disconnect', { method: 'POST' }).catch(() => null);
+            window.location.reload();
+          }}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-zinc-400 hover:bg-red-500/10 hover:text-red-400 text-sm font-medium transition-all group"
+        >
           <LogOut className="w-5 h-5" />
           Logout
         </button>

@@ -2,7 +2,11 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { UploadCloud } from 'lucide-react';
 
-export default function RecentVideos() {
+interface RecentVideosProps {
+  onOpenEditor: () => void;
+}
+
+export default function RecentVideos({ onOpenEditor }: RecentVideosProps) {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -10,7 +14,10 @@ export default function RecentVideos() {
           <h2 className="text-xl font-display font-bold text-white">Recent Content</h2>
           <p className="text-zinc-500 text-sm">Performance of your last 24h uploads</p>
         </div>
-        <button className="text-xs font-semibold text-zinc-400 hover:text-white transition-colors border border-zinc-700/50 px-4 py-2 rounded-lg hover:bg-zinc-800">
+        <button
+          onClick={onOpenEditor}
+          className="text-xs font-semibold text-zinc-400 hover:text-white transition-colors border border-zinc-700/50 px-4 py-2 rounded-lg hover:bg-zinc-800"
+        >
           View All
         </button>
       </div>

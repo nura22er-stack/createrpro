@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   AreaChart, 
   Area, 
@@ -24,6 +24,8 @@ const data = [
 ];
 
 export default function AnalyticsChart() {
+  const [metric, setMetric] = useState<'views' | 'watch' | 'revenue'>('views');
+
   return (
     <div className="glass-panel p-6 rounded-2xl flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -35,9 +37,21 @@ export default function AnalyticsChart() {
           <p className="text-zinc-500 text-sm">Connect your channel to load real analytics</p>
         </div>
         <div className="flex bg-zinc-800/50 p-1 rounded-lg border border-zinc-700/50">
-          <button className="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded-md shadow-lg shadow-red-500/20">Views</button>
-          <button className="px-3 py-1 text-xs font-medium text-zinc-400 hover:text-white transition-colors">Watch Time</button>
-          <button className="px-3 py-1 text-xs font-medium text-zinc-400 hover:text-white transition-colors">Revenue</button>
+          {[
+            { id: 'views', label: 'Views' },
+            { id: 'watch', label: 'Watch Time' },
+            { id: 'revenue', label: 'Revenue' },
+          ].map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setMetric(item.id as typeof metric)}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                metric === item.id ? 'text-white bg-red-600 shadow-lg shadow-red-500/20' : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       </div>
 

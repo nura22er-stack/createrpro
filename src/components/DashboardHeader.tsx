@@ -5,9 +5,11 @@ import { UserProfile } from '../types';
 
 interface DashboardHeaderProps {
   profile: UserProfile;
+  onCreate: () => void;
+  onOpenSettings: () => void;
 }
 
-export default function DashboardHeader({ profile }: DashboardHeaderProps) {
+export default function DashboardHeader({ profile, onCreate, onOpenSettings }: DashboardHeaderProps) {
   const displayName = profile.ownerName || 'Your name';
   const role = profile.channelName || 'Your channel';
 
@@ -25,7 +27,10 @@ export default function DashboardHeader({ profile }: DashboardHeaderProps) {
       </div>
 
       <div className="flex items-center gap-4">
-        <button className="p-2.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl transition-all relative">
+        <button
+          onClick={() => window.alert('No new notifications.')}
+          className="p-2.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl transition-all relative"
+        >
           <Bell className="w-5 h-5" />
           <span className="absolute top-2.5 right-2.5 w-2 h-2 bg-red-600 rounded-full border-2 border-zinc-950" />
         </button>
@@ -33,6 +38,7 @@ export default function DashboardHeader({ profile }: DashboardHeaderProps) {
         <div className="h-8 w-px bg-zinc-800 mx-2" />
         
         <motion.button 
+          onClick={onCreate}
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-red-600/20 transition-all"
@@ -41,7 +47,10 @@ export default function DashboardHeader({ profile }: DashboardHeaderProps) {
           Create
         </motion.button>
 
-        <button className="flex items-center gap-3 pl-2 pr-1 py-1 rounded-full hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700/50">
+        <button
+          onClick={onOpenSettings}
+          className="flex items-center gap-3 pl-2 pr-1 py-1 rounded-full hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700/50"
+        >
           <div className="text-right hidden sm:block">
             <p className="text-xs font-bold text-white tracking-tight leading-none mb-0.5">{displayName}</p>
             <p className="text-[10px] text-zinc-500 font-mono leading-none uppercase">{role}</p>

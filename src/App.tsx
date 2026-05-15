@@ -74,12 +74,35 @@ export default function App() {
       .catch(() => setProfileSaveStatus('offline'));
   }, []);
 
+  useEffect(() => {
+    if (sessionStorage.getItem('creator-pro-welcome-spoken')) return;
+    if (!('speechSynthesis' in window)) return;
+
+    const speakWelcome = () => {
+      const message = new SpeechSynthesisUtterance('Xush kelibsiz, janob.');
+      message.rate = 0.95;
+      message.pitch = 0.9;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(message);
+      sessionStorage.setItem('creator-pro-welcome-spoken', 'true');
+    };
+
+    const timer = window.setTimeout(speakWelcome, 700);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   return (
     <div className="flex min-h-screen bg-zinc-950 text-zinc-100 selection:bg-red-500/30">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
       
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
-        {activeTab !== 'AI Editor' && <DashboardHeader profile={profile} />}
+        {activeTab !== 'AI Editor' && (
+          <DashboardHeader
+            profile={profile}
+            onCreate={() => setActiveTab('AI Editor')}
+            onOpenSettings={() => setActiveTab('Settings')}
+          />
+        )}
         
         <div className="flex-1 overflow-y-auto">
           <AnimatePresence mode="wait">
@@ -162,7 +185,7 @@ export default function App() {
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
                   <div className="xl:col-span-2 space-y-8">
                     <AnalyticsChart />
-                    <RecentVideos />
+                    <RecentVideos onOpenEditor={() => setActiveTab('AI Editor')} />
                   </div>
 
                   <div className="space-y-8">
@@ -170,7 +193,12 @@ export default function App() {
                     <div className="glass-panel p-6 rounded-2xl space-y-6">
                       <div className="flex items-center justify-between">
                         <h3 className="font-display font-bold text-white">Top Geographies</h3>
-                        <button className="text-xs text-zinc-500 hover:text-white transition-colors">Details</button>
+                        <button
+                          onClick={() => setActiveTab('Analytics')}
+                          className="text-xs text-zinc-500 hover:text-white transition-colors"
+                        >
+                          Details
+                        </button>
                       </div>
                       <div className="space-y-4">
                         {[
@@ -211,7 +239,10 @@ export default function App() {
                       <p className="text-sm text-zinc-300 leading-relaxed mb-4">
                         Connect your YouTube channel to scan real performance, monetization readiness, upload errors and growth opportunities.
                       </p>
-                      <button className="w-full bg-white text-black py-2.5 rounded-xl font-bold text-xs hover:bg-zinc-200 transition-all">
+                      <button
+                        onClick={() => setActiveTab('Admin Panel')}
+                        className="w-full bg-white text-black py-2.5 rounded-xl font-bold text-xs hover:bg-zinc-200 transition-all"
+                      >
                         Optimize Channel
                       </button>
                     </div>

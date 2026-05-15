@@ -42,6 +42,7 @@ export default function AIEditor() {
   const [renderProgress, setRenderProgress] = useState(0);
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState('');
+  const [projectMode, setProjectMode] = useState<'draft' | 'shared'>('draft');
   const [uploadTitle, setUploadTitle] = useState('Creator Pro edited short');
   const [uploadTags, setUploadTags] = useState('#shorts, #ai, #creator');
   const [uploadStatus, setUploadStatus] = useState('');
@@ -162,10 +163,24 @@ export default function AIEditor() {
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800">
-            <button className="px-3 py-1.5 text-[10px] font-bold bg-zinc-800 text-white rounded-md shadow-sm">Draft</button>
-            <button className="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-white transition-colors">Shared</button>
+            <button
+              onClick={() => setProjectMode('draft')}
+              className={`px-3 py-1.5 text-[10px] font-bold rounded-md shadow-sm ${projectMode === 'draft' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-white'}`}
+            >
+              Draft
+            </button>
+            <button
+              onClick={() => setProjectMode('shared')}
+              className={`px-3 py-1.5 text-[10px] font-bold rounded-md shadow-sm ${projectMode === 'shared' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-white'}`}
+            >
+              Shared
+            </button>
           </div>
-          <button className="bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-lg text-xs font-bold shadow-lg shadow-red-600/20 transition-all flex items-center gap-2">
+          <button
+            onClick={handleYouTubeUpload}
+            disabled={(!renderedUrl && !sourceFile) || isUploading}
+            className="bg-red-600 disabled:bg-zinc-800 disabled:text-zinc-500 hover:bg-red-700 text-white px-4 py-1.5 rounded-lg text-xs font-bold shadow-lg shadow-red-600/20 transition-all flex items-center gap-2"
+          >
             Finish & Post
             <Zap className="w-3.5 h-3.5" />
           </button>
@@ -300,7 +315,13 @@ export default function AIEditor() {
                   <button className="p-1.5 text-zinc-500 hover:text-white transition-colors" onClick={() => setIsPlaying(!isPlaying)}>
                     {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
                   </button>
-                  <button className="p-1.5 text-zinc-500 hover:text-white transition-colors">
+                  <button
+                    onClick={() => {
+                      setProgress(0);
+                      setIsPlaying(false);
+                    }}
+                    className="p-1.5 text-zinc-500 hover:text-white transition-colors"
+                  >
                     <RotateCcw className="w-4 h-4" />
                   </button>
                 </div>
@@ -563,7 +584,10 @@ export default function AIEditor() {
               ))}
             </div>
 
-            <button className="w-full flex items-center justify-center gap-2 py-3 border border-dashed border-zinc-800 text-zinc-500 hover:text-white hover:border-zinc-700 transition-all rounded-xl text-xs font-bold">
+            <button
+              onClick={() => setUploadStatus('Locale queue updated. Translation engine will use the selected languages during export.')}
+              className="w-full flex items-center justify-center gap-2 py-3 border border-dashed border-zinc-800 text-zinc-500 hover:text-white hover:border-zinc-700 transition-all rounded-xl text-xs font-bold"
+            >
               <Plus className="w-4 h-4" />
               Add Locale
             </button>

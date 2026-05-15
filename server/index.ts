@@ -14,6 +14,7 @@ const port = Number(process.env.SERVER_PORT || 8787);
 const dataDir = path.resolve('.data');
 const tokenPath = path.join(dataDir, 'youtube-token.json');
 const profilePath = path.join(dataDir, 'profile.json');
+const agentPath = path.join(dataDir, 'agent.json');
 const distDir = path.resolve('dist');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 1024 } });
 
@@ -70,8 +71,67 @@ function getStatus() {
   };
 }
 
+function readAgentState() {
+  if (!fs.existsSync(agentPath)) {
+    return {
+      running: false,
+      mode: 'paused',
+      lastAction: 'AI agent is paused.',
+      startedAt: null,
+      updatedAt: new Date().toISOString(),
+      jobsCompleted: 0,
+    };
+  }
+
+  return JSON.parse(fs.readFileSync(agentPath, 'utf8'));
+}
+
+function writeAgentState(nextState: Record<string, unknown>) {
+  ensureDataDir();
+  const current = readAgentState();
+  const state = {
+    ...current,
+    ...nextState,
+    updatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(agentPath, JSON.stringify(state, null, 2));
+  return state;
+}
+
 app.get('/api/config/status', (_req, res) => {
   res.json(getStatus());
+});
+
+app.get('/api/agent/status', (_req, res) => {
+  res.json(readAgentState());
+});
+
+app.post('/api/agent/start', (_req, res) => {
+  if (!fs.existsSync(tokenPath)) {
+    res.status(409).json({
+      error: 'YouTube account is not connected. Connect YouTube before starting the AI agent.',
+    });
+    return;
+  }
+
+  const state = writeAgentState({
+    running: true,
+    mode: 'running',
+    startedAt: new Date().toISOString(),
+    lastAction: 'AI agent started. Scanning safe sources, preparing metadata, and waiting for approved video inputs.',
+  });
+
+  res.json(state);
+});
+
+app.post('/api/agent/pause', (_req, res) => {
+  const state = writeAgentState({
+    running: false,
+    mode: 'paused',
+    lastAction: 'AI agent paused by admin.',
+  });
+
+  res.json(state);
 });
 
 app.get('/api/profile', (_req, res) => {
