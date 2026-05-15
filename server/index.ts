@@ -20,6 +20,7 @@ const profilePath = path.join(dataDir, 'profile.json');
 const agentPath = path.join(dataDir, 'agent.json');
 const agentLogPath = path.join(dataDir, 'agent-log.json');
 const agentSourceCursorPath = path.join(dataDir, 'agent-source-cursor.json');
+const agentSourceHistoryPath = path.join(dataDir, 'agent-source-history.json');
 const notificationsPath = path.join(dataDir, 'notifications.json');
 const youtubeSummarySnapshotPath = path.join(dataDir, 'youtube-summary-snapshot.json');
 const voiceDir = path.join(dataDir, 'voice');
@@ -46,6 +47,14 @@ const archiveComedyIdentifiers = [
   'silent-his-musical-career',
   'his-musical-career-1914',
   'his-musical-career-1914-directed-by-charles-chaplin',
+  'out_of_this_world',
+  'tomorrow_television',
+  'middleton_family_worlds_fair_1939',
+  'Somethin1958',
+  'Somethin1940',
+  '0186_Aluminum_on_the_March_M03505_05_11_50_00',
+  '0731_Wonderful_World_19_01_23_00',
+  'ItsEvery1954',
 ];
 const blockedSourceTerms = [
   'horror',
@@ -65,7 +74,18 @@ const blockedSourceTerms = [
   'explosion',
   'accident',
   'violence',
+  'danger',
+  'addiction',
+  'beware',
+  'communist',
 ];
+
+interface AgentSourceCandidate {
+  url: string;
+  title: string;
+  provider: string;
+  identifier?: string;
+}
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(distDir));
@@ -232,6 +252,7 @@ function readAgentState() {
       jobsCompleted: 0,
       queueCount: listSourceVideos().length,
       logs: readAgentLogs(),
+      recentSources: readAgentSourceHistory(),
     };
   }
 
@@ -239,6 +260,7 @@ function readAgentState() {
     ...JSON.parse(fs.readFileSync(agentPath, 'utf8')),
     queueCount: listSourceVideos().length,
     logs: readAgentLogs(),
+    recentSources: readAgentSourceHistory(),
   };
 }
 
@@ -280,6 +302,20 @@ function appendAgentLog(message: string) {
   const logs = readAgentLogs();
   logs.unshift({ at: new Date().toISOString(), message });
   fs.writeFileSync(agentLogPath, JSON.stringify(logs.slice(0, 80), null, 2));
+}
+
+function readAgentSourceHistory() {
+  if (!fs.existsSync(agentSourceHistoryPath)) return [];
+  return JSON.parse(fs.readFileSync(agentSourceHistoryPath, 'utf8')) as Array<AgentSourceCandidate & { at: string }>;
+}
+
+function recordAgentSource(source: AgentSourceCandidate) {
+  ensureDataDir();
+  const history = readAgentSourceHistory();
+  const entry = { ...source, at: new Date().toISOString() };
+  history.unshift(entry);
+  fs.writeFileSync(agentSourceHistoryPath, JSON.stringify(history.slice(0, 40), null, 2));
+  writeAgentState({ currentSource: entry });
 }
 
 function isAllowedSourceCandidate(...values: Array<unknown>) {
@@ -403,17 +439,21 @@ function writeAgentSourceCursor(cursor: number) {
   fs.writeFileSync(agentSourceCursorPath, JSON.stringify({ cursor }, null, 2));
 }
 
-function getNextAgentSourceUrl() {
+function getNextAgentSourceUrl(): AgentSourceCandidate | null {
   const urls = readAgentSourceUrls();
   if (!urls.length) return null;
 
   const cursor = readAgentSourceCursor();
   const url = urls[cursor % urls.length];
   writeAgentSourceCursor(cursor + 1);
-  return url;
+  return {
+    url,
+    title: `Configured source ${cursor % urls.length + 1}`,
+    provider: 'Configured URL',
+  };
 }
 
-async function getInternetArchiveDownloadUrl(identifier: string) {
+async function getInternetArchiveDownloadUrl(identifier: string): Promise<AgentSourceCandidate | null> {
   const response = await fetch(`https://archive.org/metadata/${encodeURIComponent(identifier)}`, {
     headers: { 'User-Agent': 'CreatorProDashboard/1.0 (public-domain comedy discovery)' },
   });
@@ -445,11 +485,17 @@ async function getInternetArchiveDownloadUrl(identifier: string) {
     return null;
   }
 
-  appendAgentLog(`Selected public-domain comedy source: ${data.metadata?.title || identifier}`);
-  return `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(videoFile.name)}`;
+  const title = String(data.metadata?.title || identifier);
+  appendAgentLog(`Selected public-domain source: ${title}`);
+  return {
+    url: `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(videoFile.name)}`,
+    title,
+    provider: 'Internet Archive',
+    identifier,
+  };
 }
 
-async function discoverInternetArchiveComedySourceUrl() {
+async function discoverInternetArchiveComedySourceUrl(): Promise<AgentSourceCandidate | null> {
   const cursor = readAgentSourceCursor();
   const preferredIdentifiers = String(process.env.AGENT_ARCHIVE_COMEDY_IDS || '')
     .split(/[\n,]+/)
@@ -460,10 +506,10 @@ async function discoverInternetArchiveComedySourceUrl() {
   for (let index = 0; index < identifiers.length; index += 1) {
     const identifier = identifiers[(cursor + index) % identifiers.length];
     try {
-      const sourceUrl = await getInternetArchiveDownloadUrl(identifier);
-      if (sourceUrl) {
+      const source = await getInternetArchiveDownloadUrl(identifier);
+      if (source) {
         writeAgentSourceCursor(cursor + index + 1);
-        return sourceUrl;
+        return source;
       }
     } catch (error) {
       appendAgentLog(`Internet Archive source skipped: ${identifier} (${error instanceof Error ? error.message : 'unknown error'})`);
@@ -473,7 +519,7 @@ async function discoverInternetArchiveComedySourceUrl() {
   return null;
 }
 
-async function discoverWikimediaSourceUrl() {
+async function discoverWikimediaSourceUrl(): Promise<AgentSourceCandidate | null> {
   const cursor = readAgentSourceCursor();
   const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
   const query = String(profile.niche || 'funny comedy surprising').replace(/[^\w\s-]/g, ' ').trim();
@@ -534,7 +580,11 @@ async function discoverWikimediaSourceUrl() {
     if (safeVideo?.imageinfo?.[0]?.url) {
       writeAgentSourceCursor(cursor + 20);
       appendAgentLog(`Discovered rights-safe Wikimedia source: ${safeVideo.title || safeVideo.imageinfo[0].url}`);
-      return safeVideo.imageinfo[0].url;
+      return {
+        url: safeVideo.imageinfo[0].url,
+        title: safeVideo.title || 'Wikimedia source',
+        provider: 'Wikimedia Commons',
+      };
     }
   }
 
@@ -582,15 +632,17 @@ async function downloadDirectSource(url: string, destination: string) {
 
 async function queueSourceFromUrl() {
   const allowWikimediaFallback = process.env.AGENT_ALLOW_WIKIMEDIA_FALLBACK === 'true';
-  const sourceUrl =
+  const source =
     getNextAgentSourceUrl() ||
     (await discoverInternetArchiveComedySourceUrl()) ||
     (allowWikimediaFallback ? await discoverWikimediaSourceUrl() : null);
 
-  if (!sourceUrl) {
+  if (!source) {
     return null;
   }
 
+  recordAgentSource(source);
+  const sourceUrl = source.url;
   const urlPath = URL.canParse(sourceUrl) ? new URL(sourceUrl).pathname : '';
   const extension = ['.mp4', '.mov', '.webm', '.mkv'].includes(path.extname(urlPath).toLowerCase())
     ? path.extname(urlPath).toLowerCase()

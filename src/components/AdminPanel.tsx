@@ -66,6 +66,20 @@ interface AgentStatus {
   jobsCompleted: number;
   queueCount: number;
   logs: { at: string; message: string }[];
+  currentSource?: {
+    at: string;
+    title: string;
+    url: string;
+    provider: string;
+    identifier?: string;
+  };
+  recentSources?: {
+    at: string;
+    title: string;
+    url: string;
+    provider: string;
+    identifier?: string;
+  }[];
   error?: string;
 }
 
@@ -287,6 +301,50 @@ export default function AdminPanel() {
                 </div>
               ))}
               {!agent?.logs?.length && <p className="text-[11px] text-zinc-600">No agent logs yet.</p>}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-1 bg-zinc-950/50 border border-zinc-800 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Link2 className="w-4 h-4 text-red-500" />
+              <p className="text-xs font-bold text-white">Current AI Source</p>
+            </div>
+            {agent?.currentSource ? (
+              <div className="space-y-2">
+                <p className="text-sm font-semibold text-zinc-200 line-clamp-2">{agent.currentSource.title}</p>
+                <p className="text-[10px] text-zinc-500 font-mono">{agent.currentSource.provider}</p>
+                <a
+                  href={agent.currentSource.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block text-[10px] text-red-400 hover:text-red-300 truncate"
+                >
+                  {agent.currentSource.url}
+                </a>
+              </div>
+            ) : (
+              <p className="text-[11px] text-zinc-600">AI hali yangi source tanlamagan.</p>
+            )}
+          </div>
+
+          <div className="xl:col-span-2 bg-zinc-950/50 border border-zinc-800 rounded-xl p-4 max-h-44 overflow-y-auto">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-bold text-white">Recent Source Picks</p>
+              <span className="text-[10px] text-zinc-600 font-mono">{agent?.recentSources?.length || 0}</span>
+            </div>
+            <div className="space-y-2">
+              {(agent?.recentSources || []).slice(0, 6).map((source) => (
+                <div key={`${source.at}-${source.url}`} className="grid grid-cols-[5rem_1fr] gap-2 text-[11px]">
+                  <span className="text-zinc-600 font-mono">{new Date(source.at).toLocaleTimeString()}</span>
+                  <div className="min-w-0">
+                    <p className="text-zinc-300 truncate">{source.title}</p>
+                    <p className="text-zinc-600 truncate">{source.provider}{source.identifier ? ` • ${source.identifier}` : ''}</p>
+                  </div>
+                </div>
+              ))}
+              {!agent?.recentSources?.length && <p className="text-[11px] text-zinc-600">Source history hali bo‘sh.</p>}
             </div>
           </div>
         </div>
