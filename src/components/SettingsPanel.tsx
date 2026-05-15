@@ -6,6 +6,7 @@ import { UserProfile } from '../types';
 interface SettingsPanelProps {
   profile: UserProfile;
   setProfile: (profile: UserProfile) => void;
+  saveStatus: 'idle' | 'saving' | 'saved' | 'offline';
 }
 
 const fields: { key: keyof UserProfile; label: string; placeholder: string }[] = [
@@ -19,7 +20,7 @@ const fields: { key: keyof UserProfile; label: string; placeholder: string }[] =
   { key: 'uploadsPerDay', label: 'Uploads per day', placeholder: '1, 2, 3...' },
 ];
 
-export default function SettingsPanel({ profile, setProfile }: SettingsPanelProps) {
+export default function SettingsPanel({ profile, setProfile, saveStatus }: SettingsPanelProps) {
   function updateField(key: keyof UserProfile, value: string) {
     setProfile({ ...profile, [key]: value });
   }
@@ -72,7 +73,7 @@ export default function SettingsPanel({ profile, setProfile }: SettingsPanelProp
           <Youtube className="w-5 h-5 text-red-500" />
           <div>
             <h2 className="font-display font-bold text-white">Channel Profile</h2>
-            <p className="text-sm text-zinc-500">Bu qiymatlar brauzeringizda saqlanadi va keyin API ulashda ishlatiladi.</p>
+            <p className="text-sm text-zinc-500">Bu qiymatlar serverda saqlanadi, shuning uchun boshqa browser yoki akkauntdan kirganda ham ko‘rinadi.</p>
           </div>
         </div>
 
@@ -92,7 +93,11 @@ export default function SettingsPanel({ profile, setProfile }: SettingsPanelProp
 
         <div className="mt-6 flex items-center gap-3 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3">
           <Save className="w-4 h-4" />
-          Changes auto-save locally
+          {saveStatus === 'saving'
+            ? 'Saving to server...'
+            : saveStatus === 'offline'
+              ? 'Offline fallback: saved in this browser only'
+              : 'Changes auto-save on server'}
         </div>
       </section>
     </motion.div>

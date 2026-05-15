@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import DashboardHeader from './components/DashboardHeader';
 import StatCard from './components/StatCard';
@@ -40,11 +40,39 @@ export default function App() {
       return emptyProfile;
     }
   });
+  const [profileSaveStatus, setProfileSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'offline'>('idle');
 
   function setProfile(nextProfile: UserProfile) {
     setProfileState(nextProfile);
     localStorage.setItem('creator-pro-profile', JSON.stringify(nextProfile));
+    setProfileSaveStatus('saving');
+
+    fetch('/api/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nextProfile),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error('Profile save failed');
+        setProfileSaveStatus('saved');
+      })
+      .catch(() => setProfileSaveStatus('offline'));
   }
+
+  useEffect(() => {
+    fetch('/api/profile')
+      .then((response) => {
+        if (!response.ok) throw new Error('Profile load failed');
+        return response.json();
+      })
+      .then((serverProfile) => {
+        const nextProfile = { ...emptyProfile, ...serverProfile };
+        setProfileState(nextProfile);
+        localStorage.setItem('creator-pro-profile', JSON.stringify(nextProfile));
+        setProfileSaveStatus('saved');
+      })
+      .catch(() => setProfileSaveStatus('offline'));
+  }, []);
 
   return (
     <div className="flex min-h-screen bg-zinc-950 text-zinc-100 selection:bg-red-500/30">
@@ -193,7 +221,7 @@ export default function App() {
             ) : activeTab === 'Admin Panel' ? (
               <AdminPanel />
             ) : activeTab === 'Settings' ? (
-              <SettingsPanel profile={profile} setProfile={setProfile} />
+              <SettingsPanel profile={profile} setProfile={setProfile} saveStatus={profileSaveStatus} />
             ) : activeTab === 'AI Editor' ? (
               <motion.div 
                 key="editor"

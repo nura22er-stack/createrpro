@@ -13,6 +13,7 @@ const app = express();
 const port = Number(process.env.SERVER_PORT || 8787);
 const dataDir = path.resolve('.data');
 const tokenPath = path.join(dataDir, 'youtube-token.json');
+const profilePath = path.join(dataDir, 'profile.json');
 const distDir = path.resolve('dist');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 1024 } });
 
@@ -71,6 +72,21 @@ function getStatus() {
 
 app.get('/api/config/status', (_req, res) => {
   res.json(getStatus());
+});
+
+app.get('/api/profile', (_req, res) => {
+  if (!fs.existsSync(profilePath)) {
+    res.json({});
+    return;
+  }
+
+  res.json(JSON.parse(fs.readFileSync(profilePath, 'utf8')));
+});
+
+app.put('/api/profile', (req, res) => {
+  ensureDataDir();
+  fs.writeFileSync(profilePath, JSON.stringify(req.body || {}, null, 2));
+  res.json({ ok: true, profile: req.body || {} });
 });
 
 app.get('/auth/youtube', (_req, res) => {
