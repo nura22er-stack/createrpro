@@ -465,6 +465,7 @@ app.get('/auth/youtube', (_req, res) => {
     scope: [
       'https://www.googleapis.com/auth/youtube.upload',
       'https://www.googleapis.com/auth/youtube.readonly',
+      'https://www.googleapis.com/auth/youtube.force-ssl',
       'https://www.googleapis.com/auth/yt-analytics.readonly',
     ],
   });
@@ -526,6 +527,68 @@ app.get('/api/youtube/channel', async (_req, res) => {
   });
 
   res.json(response.data.items?.[0] || null);
+});
+
+app.get('/api/youtube/videos', async (_req, res) => {
+  const client = getOAuthClient();
+
+  if (!client || !fs.existsSync(tokenPath)) {
+    res.status(401).json({ error: 'YouTube account is not connected.' });
+    return;
+  }
+
+  try {
+    const youtube = google.youtube({ version: 'v3', auth: client });
+    const channelResponse = await youtube.channels.list({
+      mine: true,
+      part: ['contentDetails'],
+    });
+    const uploadsPlaylistId = channelResponse.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+
+    if (!uploadsPlaylistId) {
+      res.json([]);
+      return;
+    }
+
+    const playlistResponse = await youtube.playlistItems.list({
+      playlistId: uploadsPlaylistId,
+      part: ['snippet', 'contentDetails'],
+      maxResults: 12,
+    });
+    const videoIds = (playlistResponse.data.items || [])
+      .map((item) => item.contentDetails?.videoId)
+      .filter(Boolean) as string[];
+
+    if (!videoIds.length) {
+      res.json([]);
+      return;
+    }
+
+    const videosResponse = await youtube.videos.list({
+      id: videoIds,
+      part: ['snippet', 'statistics', 'contentDetails', 'status'],
+    });
+    const videos = (videosResponse.data.items || []).map((video) => ({
+      id: video.id,
+      title: video.snippet?.title || 'Untitled video',
+      thumbnail:
+        video.snippet?.thumbnails?.medium?.url ||
+        video.snippet?.thumbnails?.default?.url ||
+        '',
+      views: Number(video.statistics?.viewCount || 0),
+      likes: Number(video.statistics?.likeCount || 0),
+      comments: Number(video.statistics?.commentCount || 0),
+      duration: video.contentDetails?.duration || '',
+      publishedAt: video.snippet?.publishedAt || '',
+      privacyStatus: video.status?.privacyStatus || 'unknown',
+      url: `https://www.youtube.com/watch?v=${video.id}`,
+    }));
+
+    res.json(videos);
+  } catch (error) {
+    console.error('Could not load YouTube videos', error);
+    res.status(502).json({ error: 'YouTube videos could not be loaded. Reconnect YouTube if this continues.' });
+  }
 });
 
 app.post('/api/youtube/upload', upload.single('video'), async (req, res) => {
