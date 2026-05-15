@@ -47,6 +47,25 @@ const archiveComedyIdentifiers = [
   'his-musical-career-1914',
   'his-musical-career-1914-directed-by-charles-chaplin',
 ];
+const blockedSourceTerms = [
+  'horror',
+  'scary',
+  'ghost',
+  'haunted',
+  'zombie',
+  'monster',
+  'snake',
+  'fire',
+  'war',
+  'weapon',
+  'gun',
+  'blood',
+  'crash',
+  'disaster',
+  'explosion',
+  'accident',
+  'violence',
+];
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(distDir));
@@ -263,6 +282,13 @@ function appendAgentLog(message: string) {
   fs.writeFileSync(agentLogPath, JSON.stringify(logs.slice(0, 80), null, 2));
 }
 
+function isAllowedSourceCandidate(...values: Array<unknown>) {
+  const text = values
+    .map((value) => String(value || '').toLowerCase())
+    .join(' ');
+  return !blockedSourceTerms.some((term) => text.includes(term));
+}
+
 function readNotifications() {
   if (!fs.existsSync(notificationsPath)) return [];
   return JSON.parse(fs.readFileSync(notificationsPath, 'utf8')) as Array<{
@@ -397,9 +423,15 @@ async function getInternetArchiveDownloadUrl(identifier: string) {
   }
 
   const data = await response.json();
+  if (!isAllowedSourceCandidate(identifier, data.metadata?.title, data.metadata?.description)) {
+    appendAgentLog(`Internet Archive source blocked by safety filter: ${data.metadata?.title || identifier}`);
+    return null;
+  }
+
   const files = (data.files || []) as Array<{ name?: string; format?: string; size?: string }>;
   const videoFile = files
     .filter((file) => /\.(mp4|webm|ogv)$/i.test(file.name || ''))
+    .filter((file) => isAllowedSourceCandidate(file.name))
     .filter((file) => Number(file.size || 0) > 0 && Number(file.size || 0) <= agentSourceMaxBytes)
     .sort((a, b) => {
       const aName = String(a.name || '').toLowerCase();
@@ -491,7 +523,12 @@ async function discoverWikimediaSourceUrl() {
     const safeVideo = pages.find((page) => {
       const info = page.imageinfo?.[0];
       const license = String(info?.extmetadata?.LicenseShortName?.value || '').toLowerCase();
-      return info?.url && info.mime?.startsWith('video/') && (license.includes('cc0') || license.includes('public domain') || license.includes('pdm'));
+      return (
+        info?.url &&
+        info.mime?.startsWith('video/') &&
+        (license.includes('cc0') || license.includes('public domain') || license.includes('pdm')) &&
+        isAllowedSourceCandidate(page.title, info.url)
+      );
     });
 
     if (safeVideo?.imageinfo?.[0]?.url) {
@@ -544,7 +581,11 @@ async function downloadDirectSource(url: string, destination: string) {
 }
 
 async function queueSourceFromUrl() {
-  const sourceUrl = getNextAgentSourceUrl() || (await discoverInternetArchiveComedySourceUrl()) || (await discoverWikimediaSourceUrl());
+  const allowWikimediaFallback = process.env.AGENT_ALLOW_WIKIMEDIA_FALLBACK === 'true';
+  const sourceUrl =
+    getNextAgentSourceUrl() ||
+    (await discoverInternetArchiveComedySourceUrl()) ||
+    (allowWikimediaFallback ? await discoverWikimediaSourceUrl() : null);
 
   if (!sourceUrl) {
     return null;
