@@ -13,7 +13,7 @@ import {
 } from 'recharts';
 import { BarChart3 } from 'lucide-react';
 
-const data = [
+const fallbackData = [
   { name: 'Mon', views: 0, revenue: 0 },
   { name: 'Tue', views: 0, revenue: 0 },
   { name: 'Wed', views: 0, revenue: 0 },
@@ -23,18 +23,24 @@ const data = [
   { name: 'Sun', views: 0, revenue: 0 },
 ];
 
-export default function AnalyticsChart() {
+interface AnalyticsChartProps {
+  data?: { name: string; views: number; revenue: number }[];
+  subtitle?: string;
+}
+
+export default function AnalyticsChart({ data = fallbackData, subtitle = 'Real YouTube analytics from your connected channel' }: AnalyticsChartProps) {
   const [metric, setMetric] = useState<'views' | 'watch' | 'revenue'>('views');
+  const dataKey = metric === 'watch' ? 'views' : metric;
 
   return (
     <div className="glass-panel p-6 rounded-2xl flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-display font-bold text-white flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-red-500" />
             Growth Analytics
           </h2>
-          <p className="text-zinc-500 text-sm">Connect your channel to load real analytics</p>
+          <p className="text-zinc-500 text-sm">{subtitle}</p>
         </div>
         <div className="flex bg-zinc-800/50 p-1 rounded-lg border border-zinc-700/50">
           {[
@@ -89,7 +95,7 @@ export default function AnalyticsChart() {
             />
             <Area 
               type="monotone" 
-              dataKey="views" 
+              dataKey={dataKey} 
               stroke="#ff0000" 
               strokeWidth={3}
               fillOpacity={1} 

@@ -984,6 +984,85 @@ app.get('/api/youtube/channel', requireAdmin, async (_req, res) => {
   res.json(response.data.items?.[0] || null);
 });
 
+app.get('/api/youtube/summary', requireAdmin, async (_req, res) => {
+  const client = getOAuthClient();
+
+  if (!client || !fs.existsSync(tokenPath)) {
+    res.status(401).json({ error: 'YouTube account is not connected.' });
+    return;
+  }
+
+  try {
+    const youtube = google.youtube({ version: 'v3', auth: client });
+    const channelResponse = await youtube.channels.list({
+      mine: true,
+      part: ['snippet', 'statistics', 'contentDetails'],
+    });
+    const channel = channelResponse.data.items?.[0];
+    const uploadsPlaylistId = channel?.contentDetails?.relatedPlaylists?.uploads;
+    const chart = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((name) => ({ name, views: 0, revenue: 0 }));
+    let recentViews = 0;
+    let recentLikes = 0;
+    let recentComments = 0;
+    let latestVideoCount = 0;
+
+    if (uploadsPlaylistId) {
+      const playlistResponse = await youtube.playlistItems.list({
+        playlistId: uploadsPlaylistId,
+        part: ['contentDetails'],
+        maxResults: 50,
+      });
+      const videoIds = (playlistResponse.data.items || [])
+        .map((item) => item.contentDetails?.videoId)
+        .filter(Boolean) as string[];
+
+      if (videoIds.length) {
+        const videosResponse = await youtube.videos.list({
+          id: videoIds,
+          part: ['snippet', 'statistics'],
+        });
+
+        for (const video of videosResponse.data.items || []) {
+          const views = Number(video.statistics?.viewCount || 0);
+          const publishedAt = video.snippet?.publishedAt ? new Date(video.snippet.publishedAt) : null;
+          recentViews += views;
+          recentLikes += Number(video.statistics?.likeCount || 0);
+          recentComments += Number(video.statistics?.commentCount || 0);
+          latestVideoCount += 1;
+
+          if (publishedAt) {
+            const ageMs = Date.now() - publishedAt.getTime();
+            if (ageMs >= 0 && ageMs <= 7 * 24 * 60 * 60 * 1000) {
+              const dayName = publishedAt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
+              const bucket = chart.find((item) => item.name === dayName);
+              if (bucket) bucket.views += views;
+            }
+          }
+        }
+      }
+    }
+
+    res.json({
+      channelTitle: channel?.snippet?.title || '',
+      subscribers: Number(channel?.statistics?.subscriberCount || 0),
+      subscribersHidden: Boolean(channel?.statistics?.hiddenSubscriberCount),
+      totalViews: Number(channel?.statistics?.viewCount || 0),
+      totalVideos: Number(channel?.statistics?.videoCount || 0),
+      recentViews,
+      recentLikes,
+      recentComments,
+      latestVideoCount,
+      estimatedRevenue: null,
+      avgWatchTime: null,
+      chart,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Could not load YouTube summary', error);
+    res.status(502).json({ error: 'YouTube statistics could not be loaded. Reconnect YouTube if this continues.' });
+  }
+});
+
 app.get('/api/youtube/videos', requireAdmin, async (_req, res) => {
   const client = getOAuthClient();
 

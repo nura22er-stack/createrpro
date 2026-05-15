@@ -26,6 +26,22 @@ interface SessionState {
   loginUrl: string;
 }
 
+interface YouTubeSummary {
+  channelTitle: string;
+  subscribers: number;
+  subscribersHidden: boolean;
+  totalViews: number;
+  totalVideos: number;
+  recentViews: number;
+  recentLikes: number;
+  recentComments: number;
+  latestVideoCount: number;
+  estimatedRevenue: number | null;
+  avgWatchTime: string | null;
+  chart: { name: string; views: number; revenue: number }[];
+  updatedAt: string;
+}
+
 const emptyProfile: UserProfile = {
   ownerName: '',
   channelName: '',
@@ -40,6 +56,8 @@ const emptyProfile: UserProfile = {
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('Dashboard');
   const [session, setSession] = useState<SessionState | null>(null);
+  const [summary, setSummary] = useState<YouTubeSummary | null>(null);
+  const [summaryError, setSummaryError] = useState('');
   const [profile, setProfileState] = useState<UserProfile>(() => {
     try {
       const stored = localStorage.getItem('creator-pro-profile');
@@ -49,6 +67,10 @@ export default function App() {
     }
   });
   const [profileSaveStatus, setProfileSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'offline'>('idle');
+
+  function formatNumber(value: number) {
+    return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+  }
 
   function setProfile(nextProfile: UserProfile) {
     if (!session?.authenticated) return;
@@ -90,6 +112,27 @@ export default function App() {
         setProfileSaveStatus('saved');
       })
       .catch(() => setProfileSaveStatus('offline'));
+  }, [session?.authenticated]);
+
+  useEffect(() => {
+    if (!session?.authenticated) return;
+
+    const loadSummary = () => {
+      fetch('/api/youtube/summary')
+        .then((response) => {
+          if (!response.ok) throw new Error('YouTube statistics not available');
+          return response.json();
+        })
+        .then((data) => {
+          setSummary(data);
+          setSummaryError('');
+        })
+        .catch((error) => setSummaryError(error instanceof Error ? error.message : 'YouTube statistics not available'));
+    };
+
+    loadSummary();
+    const interval = window.setInterval(loadSummary, 60000);
+    return () => window.clearInterval(interval);
   }, [session?.authenticated]);
 
   useEffect(() => {
@@ -195,10 +238,10 @@ export default function App() {
                       <span className="text-xs font-bold text-red-500 uppercase tracking-widest">Creator Profile</span>
                     </motion.div>
                     <h1 className="text-3xl sm:text-4xl font-display font-bold text-white tracking-tight">
-                      {profile.channelName || 'Your Channel Overview'}
+                      {summary?.channelTitle || profile.channelName || 'Your Channel Overview'}
                     </h1>
                     <p className="text-zinc-500 mt-1">
-                      {profile.channelUrl ? 'Real analytics will appear after YouTube OAuth connection.' : 'Open Settings and enter your channel details.'}
+                      {summary ? `Updated: ${new Date(summary.updatedAt).toLocaleTimeString()}` : summaryError || 'Open Admin Panel and connect YouTube to load real stats.'}
                     </p>
                   </div>
                   
@@ -220,28 +263,28 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                   <StatCard 
                     label="Total Subscribers" 
-                    value="0" 
+                    value={summary?.subscribersHidden ? 'Hidden' : formatNumber(summary?.subscribers || 0)}
                     growth={0} 
                     icon={Users} 
                     delay={0.1}
                   />
                   <StatCard 
                     label="Total Views" 
-                    value="0" 
+                    value={formatNumber(summary?.totalViews || 0)}
                     growth={0} 
                     icon={Eye} 
                     delay={0.2}
                   />
                   <StatCard 
-                    label="Watch Time (Hrs)" 
-                    value="0" 
+                    label="Recent Likes" 
+                    value={formatNumber(summary?.recentLikes || 0)}
                     growth={0} 
                     icon={Clock} 
                     delay={0.3}
                   />
                   <StatCard 
-                    label="Monthly Revenue" 
-                    value="$0.00" 
+                    label="Videos" 
+                    value={formatNumber(summary?.totalVideos || 0)}
                     growth={0} 
                     icon={DollarSign} 
                     delay={0.4}
@@ -251,7 +294,10 @@ export default function App() {
                 {/* Main Content Sections */}
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
                   <div className="xl:col-span-2 space-y-8">
-                    <AnalyticsChart />
+                    <AnalyticsChart
+                      data={summary?.chart}
+                      subtitle={summary ? `Last 7 days from ${summary.latestVideoCount} recent uploads` : summaryError || 'Connect YouTube to load real analytics'}
+                    />
                     <RecentVideos onOpenEditor={() => setActiveTab('AI Editor')} />
                   </div>
 
