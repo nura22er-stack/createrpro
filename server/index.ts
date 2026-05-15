@@ -173,17 +173,29 @@ function runFfmpeg(inputPath: string, outputPath: string) {
       '-i',
       inputPath,
       '-t',
-      '60',
+      '58',
       '-vf',
-      'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,eq=contrast=1.08:saturation=1.18,format=yuv420p',
+      'scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.7:3:3:0.3,eq=contrast=1.08:saturation=1.16,setsar=1,format=yuv420p',
+      '-af',
+      'loudnorm=I=-14:TP=-1.5:LRA=11',
+      '-r',
+      '30',
       '-c:v',
       'libx264',
       '-preset',
-      'veryfast',
+      'medium',
+      '-crf',
+      '18',
+      '-maxrate',
+      '10M',
+      '-bufsize',
+      '20M',
       '-c:a',
       'aac',
       '-b:a',
-      '128k',
+      '192k',
+      '-movflags',
+      '+faststart',
       outputPath,
     ];
     const child = spawn('ffmpeg', args);
@@ -226,6 +238,10 @@ async function uploadVideoPath(videoPath: string, metadata: { title: string; des
     throw new Error('YouTube account is not connected.');
   }
 
+  const privacyStatus = ['private', 'unlisted', 'public'].includes(process.env.AGENT_PRIVACY_STATUS || '')
+    ? process.env.AGENT_PRIVACY_STATUS
+    : 'public';
+
   const youtube = google.youtube({ version: 'v3', auth: client });
   const response = await youtube.videos.insert({
     part: ['snippet', 'status'],
@@ -237,7 +253,7 @@ async function uploadVideoPath(videoPath: string, metadata: { title: string; des
         categoryId: '22',
       },
       status: {
-        privacyStatus: 'private',
+        privacyStatus,
         selfDeclaredMadeForKids: false,
       },
     },
@@ -274,16 +290,16 @@ async function processNextAgentJob() {
     await runFfmpeg(processingPath, outputPath);
 
     const metadata = buildUploadMetadata(processingPath);
-    appendAgentLog(`Uploading ${path.basename(outputPath)} to YouTube as private.`);
+    appendAgentLog(`Uploading ${path.basename(outputPath)} to YouTube as ${process.env.AGENT_PRIVACY_STATUS || 'public'}.`);
     writeAgentState({ mode: 'uploading', lastAction: `Uploading ${metadata.title}` });
 
     const videoId = await uploadVideoPath(outputPath, metadata);
-    appendAgentLog(`Uploaded private video to YouTube. Video ID: ${videoId}`);
+    appendAgentLog(`Uploaded video to YouTube. Video ID: ${videoId}`);
     fs.rmSync(processingPath, { force: true });
     writeAgentState({
       mode: 'running',
       jobsCompleted: Number(state.jobsCompleted || 0) + 1,
-      lastAction: `Uploaded private video. Video ID: ${videoId}`,
+      lastAction: `Uploaded video. Video ID: ${videoId}`,
       error: '',
     });
   } catch (error) {

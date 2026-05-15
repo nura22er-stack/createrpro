@@ -401,7 +401,7 @@ export default function AdminPanel() {
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-zinc-950/50 border border-zinc-800 rounded-xl p-3">
                 <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Visibility</p>
-                <p className="text-sm text-white mt-1">Private review</p>
+                <p className="text-sm text-white mt-1">Public upload</p>
               </div>
               <div className="bg-zinc-950/50 border border-zinc-800 rounded-xl p-3">
                 <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Format</p>
@@ -414,7 +414,7 @@ export default function AdminPanel() {
             </div>
             <div className="bg-zinc-950/50 border border-zinc-800 rounded-xl p-3">
               <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Schedule</p>
-              <p className="text-sm text-white mt-1">Manual approval before publish</p>
+              <p className="text-sm text-white mt-1">Auto publish when agent is running</p>
             </div>
           </div>
         </section>
