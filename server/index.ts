@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import multer from 'multer';
 import { google } from 'googleapis';
@@ -17,6 +18,7 @@ const tokenPath = path.join(dataDir, 'youtube-token.json');
 const profilePath = path.join(dataDir, 'profile.json');
 const agentPath = path.join(dataDir, 'agent.json');
 const agentLogPath = path.join(dataDir, 'agent-log.json');
+const agentSourceCursorPath = path.join(dataDir, 'agent-source-cursor.json');
 const voiceDir = path.join(dataDir, 'voice');
 const sourceDir = path.resolve('uploads/source');
 const processingDir = path.resolve('uploads/processing');
@@ -24,6 +26,11 @@ const processedDir = path.resolve('uploads/processed');
 const failedDir = path.resolve('uploads/failed');
 const distDir = path.resolve('dist');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 1024 } });
+const agentUploadIntervalMs = Number(process.env.AGENT_UPLOAD_INTERVAL_MS || 5 * 60 * 1000);
+const agentTickMs = Number(process.env.AGENT_TICK_MS || 30 * 1000);
+const agentOutputWidth = Number(process.env.AGENT_OUTPUT_WIDTH || 720);
+const agentOutputHeight = Number(process.env.AGENT_OUTPUT_HEIGHT || 1280);
+const staleProcessingMs = Number(process.env.AGENT_STALE_PROCESSING_MS || 2 * 60 * 1000);
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(distDir));
@@ -151,19 +158,192 @@ function appendAgentLog(message: string) {
   fs.writeFileSync(agentLogPath, JSON.stringify(logs.slice(0, 80), null, 2));
 }
 
-function listSourceVideos() {
+function listVideosInDir(directory: string) {
   ensureDataDir();
   const allowed = new Set(['.mp4', '.mov', '.webm', '.mkv']);
   return fs
-    .readdirSync(sourceDir)
+    .readdirSync(directory)
     .filter((name) => allowed.has(path.extname(name).toLowerCase()))
-    .map((name) => path.join(sourceDir, name));
+    .map((name) => path.join(directory, name));
+}
+
+function listSourceVideos() {
+  return listVideosInDir(sourceDir);
+}
+
+function cleanupStaleProcessingFiles() {
+  const staleFiles = listVideosInDir(processingDir).filter((filePath) => Date.now() - fs.statSync(filePath).mtimeMs > staleProcessingMs);
+
+  for (const filePath of staleFiles) {
+    const destination = path.join(failedDir, path.basename(filePath));
+    fs.renameSync(filePath, destination);
+    appendAgentLog(`Moved stale processing file to failed: ${path.basename(filePath)}`);
+  }
 }
 
 function safeFileName(name: string) {
   const extension = path.extname(name) || '.mp4';
   const base = path.basename(name, extension).replace(/[^a-z0-9-_]+/gi, '-').slice(0, 80) || 'source-video';
   return `${Date.now()}-${base}${extension.toLowerCase()}`;
+}
+
+function readAgentSourceUrls() {
+  return String(process.env.AGENT_SOURCE_URLS || '')
+    .split(/[\n,]+/)
+    .map((url) => url.trim())
+    .filter(Boolean);
+}
+
+function readAgentSourceCursor() {
+  if (!fs.existsSync(agentSourceCursorPath)) return 0;
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(agentSourceCursorPath, 'utf8'));
+    return Number(parsed.cursor || 0);
+  } catch {
+    return 0;
+  }
+}
+
+function writeAgentSourceCursor(cursor: number) {
+  ensureDataDir();
+  fs.writeFileSync(agentSourceCursorPath, JSON.stringify({ cursor }, null, 2));
+}
+
+function getNextAgentSourceUrl() {
+  const urls = readAgentSourceUrls();
+  if (!urls.length) return null;
+
+  const cursor = readAgentSourceCursor();
+  const url = urls[cursor % urls.length];
+  writeAgentSourceCursor(cursor + 1);
+  return url;
+}
+
+async function discoverWikimediaSourceUrl() {
+  const cursor = readAgentSourceCursor();
+  const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
+  const query = String(profile.niche || 'nature city technology').replace(/[^\w\s-]/g, ' ').trim();
+  const searchQueries = [query, 'nature landscape', 'city timelapse', 'technology science'].filter(Boolean);
+
+  for (const searchQuery of searchQueries) {
+    const params = new URLSearchParams({
+      action: 'query',
+      generator: 'search',
+      gsrnamespace: '6',
+      gsrsearch: `filetype:video ${searchQuery}`,
+      gsrlimit: '20',
+      gsroffset: String(cursor % 200),
+      prop: 'imageinfo',
+      iiprop: 'url|mime|extmetadata',
+      format: 'json',
+      origin: '*',
+    });
+
+    const response = await fetch(`https://commons.wikimedia.org/w/api.php?${params.toString()}`, {
+      headers: { 'User-Agent': 'CreatorProDashboard/1.0 (rights-safe video discovery)' },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Wikimedia discovery failed with ${response.status}`);
+    }
+
+    const data = await response.json();
+    const pages = Object.values(data.query?.pages || {}) as Array<{
+      title?: string;
+      imageinfo?: Array<{
+        url?: string;
+        mime?: string;
+        extmetadata?: {
+          LicenseShortName?: { value?: string };
+        };
+      }>;
+    }>;
+    const safeVideo = pages.find((page) => {
+      const info = page.imageinfo?.[0];
+      const license = String(info?.extmetadata?.LicenseShortName?.value || '').toLowerCase();
+      return info?.url && info.mime?.startsWith('video/') && (license.includes('cc0') || license.includes('public domain') || license.includes('pdm'));
+    });
+
+    if (safeVideo?.imageinfo?.[0]?.url) {
+      writeAgentSourceCursor(cursor + 20);
+      appendAgentLog(`Discovered rights-safe Wikimedia source: ${safeVideo.title || safeVideo.imageinfo[0].url}`);
+      return safeVideo.imageinfo[0].url;
+    }
+  }
+
+  writeAgentSourceCursor(cursor + 20);
+  return null;
+}
+
+function runYtDlp(url: string, outputTemplate: string) {
+  return new Promise<void>((resolve, reject) => {
+    const args = [
+      '-f',
+      'bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best',
+      '--merge-output-format',
+      'mp4',
+      '--no-playlist',
+      '--max-filesize',
+      '500m',
+      '-o',
+      outputTemplate,
+      url,
+    ];
+    const child = spawn('yt-dlp', args);
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.slice(-1200) || `yt-dlp exited with code ${code}`));
+    });
+  });
+}
+
+async function downloadDirectSource(url: string, destination: string) {
+  const response = await fetch(url);
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Source download failed with ${response.status}`);
+  }
+
+  await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), fs.createWriteStream(destination));
+}
+
+async function queueSourceFromUrl() {
+  const sourceUrl = getNextAgentSourceUrl() || (await discoverWikimediaSourceUrl());
+
+  if (!sourceUrl) {
+    return null;
+  }
+
+  const urlPath = URL.canParse(sourceUrl) ? new URL(sourceUrl).pathname : '';
+  const extension = ['.mp4', '.mov', '.webm', '.mkv'].includes(path.extname(urlPath).toLowerCase())
+    ? path.extname(urlPath).toLowerCase()
+    : '.mp4';
+  const baseName = safeFileName(`auto-source${extension}`);
+  const directDestination = path.join(sourceDir, baseName);
+  const outputTemplate = path.join(sourceDir, `${Date.now()}-auto-source.%(ext)s`);
+
+  appendAgentLog(`Fetching source video from configured source: ${sourceUrl}`);
+
+  if (/\.(mp4|mov|webm|mkv)(\?|#|$)/i.test(sourceUrl)) {
+    await downloadDirectSource(sourceUrl, directDestination);
+    return directDestination;
+  }
+
+  await runYtDlp(sourceUrl, outputTemplate);
+  const downloaded = listSourceVideos().sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+
+  if (!downloaded) {
+    throw new Error('yt-dlp finished but did not create a source video.');
+  }
+
+  return downloaded;
 }
 
 function runFfmpeg(inputPath: string, outputPath: string) {
@@ -175,21 +355,23 @@ function runFfmpeg(inputPath: string, outputPath: string) {
       '-t',
       '58',
       '-vf',
-      'scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.7:3:3:0.3,eq=contrast=1.08:saturation=1.16,setsar=1,format=yuv420p',
+      `scale=${agentOutputWidth}:${agentOutputHeight}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${agentOutputWidth}:${agentOutputHeight}:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.55:3:3:0.25,eq=contrast=1.06:saturation=1.12,setsar=1,format=yuv420p`,
       '-af',
       'loudnorm=I=-14:TP=-1.5:LRA=11',
       '-r',
       '30',
       '-c:v',
       'libx264',
+      '-threads',
+      '1',
       '-preset',
-      'medium',
+      'veryfast',
       '-crf',
-      '18',
+      '21',
       '-maxrate',
-      '10M',
+      '6M',
       '-bufsize',
-      '20M',
+      '12M',
       '-c:a',
       'aac',
       '-b:a',
@@ -268,14 +450,70 @@ async function uploadVideoPath(videoPath: string, metadata: { title: string; des
 
 let agentWorking = false;
 
+function getNextAgentRunAt(lastUploadAt?: unknown) {
+  const lastUploadTime = lastUploadAt ? new Date(String(lastUploadAt)).getTime() : 0;
+  if (!lastUploadTime) return new Date().toISOString();
+
+  return new Date(lastUploadTime + agentUploadIntervalMs).toISOString();
+}
+
+function shouldWaitForNextUpload(lastUploadAt?: unknown) {
+  const lastUploadTime = lastUploadAt ? new Date(String(lastUploadAt)).getTime() : 0;
+  return Boolean(lastUploadTime && Date.now() - lastUploadTime < agentUploadIntervalMs);
+}
+
 async function processNextAgentJob() {
   const state = readAgentState();
   if (!state.running || agentWorking) return;
 
-  const [nextSource] = listSourceVideos();
-  if (!nextSource) {
-    writeAgentState({ lastAction: 'AI agent is running. Waiting for source videos in uploads/source.' });
+  cleanupStaleProcessingFiles();
+
+  const processingFiles = listVideosInDir(processingDir);
+  if (processingFiles.length) {
+    writeAgentState({
+      mode: 'editing',
+      lastAction: `AI agent is still processing ${path.basename(processingFiles[0])}.`,
+    });
     return;
+  }
+
+  const lastCycleAt = state.lastAttemptAt || state.lastUploadAt;
+  if (shouldWaitForNextUpload(lastCycleAt)) {
+    writeAgentState({
+      mode: 'running',
+      nextRunAt: getNextAgentRunAt(lastCycleAt),
+      lastAction: `AI agent is running. Next upload window: ${getNextAgentRunAt(lastCycleAt)}.`,
+    });
+    return;
+  }
+
+  let [nextSource] = listSourceVideos();
+  if (!nextSource) {
+    try {
+      writeAgentState({
+        mode: 'finding-source',
+        lastAction: 'AI agent is finding a rights-safe source video.',
+      });
+      nextSource = (await queueSourceFromUrl()) || undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not fetch source video.';
+      appendAgentLog(`Source fetch error: ${message}`);
+      writeAgentState({
+        mode: 'running',
+        nextRunAt: new Date(Date.now() + agentUploadIntervalMs).toISOString(),
+        lastAction: 'AI agent could not fetch a source video. It will retry.',
+        error: message,
+      });
+      return;
+    }
+
+    if (!nextSource) {
+      writeAgentState({
+        mode: 'running',
+        lastAction: 'AI agent is running. Add videos to uploads/source or set AGENT_SOURCE_URLS.',
+      });
+      return;
+    }
   }
 
   agentWorking = true;
@@ -283,9 +521,15 @@ async function processNextAgentJob() {
   const outputPath = path.join(processedDir, `${path.basename(nextSource, path.extname(nextSource))}-short.mp4`);
 
   try {
+    const lastAttemptAt = new Date().toISOString();
     fs.renameSync(nextSource, processingPath);
     appendAgentLog(`Started editing ${path.basename(processingPath)}.`);
-    writeAgentState({ mode: 'editing', lastAction: `Editing ${path.basename(processingPath)} with FFmpeg.` });
+    writeAgentState({
+      mode: 'editing',
+      lastAttemptAt,
+      nextRunAt: getNextAgentRunAt(lastAttemptAt),
+      lastAction: `Editing ${path.basename(processingPath)} with FFmpeg.`,
+    });
 
     await runFfmpeg(processingPath, outputPath);
 
@@ -296,10 +540,13 @@ async function processNextAgentJob() {
     const videoId = await uploadVideoPath(outputPath, metadata);
     appendAgentLog(`Uploaded video to YouTube. Video ID: ${videoId}`);
     fs.rmSync(processingPath, { force: true });
+    const lastUploadAt = new Date().toISOString();
     writeAgentState({
       mode: 'running',
       jobsCompleted: Number(state.jobsCompleted || 0) + 1,
       lastAction: `Uploaded video. Video ID: ${videoId}`,
+      lastUploadAt,
+      nextRunAt: getNextAgentRunAt(lastUploadAt),
       error: '',
     });
   } catch (error) {
@@ -308,7 +555,14 @@ async function processNextAgentJob() {
     if (fs.existsSync(processingPath)) {
       fs.renameSync(processingPath, path.join(failedDir, path.basename(processingPath)));
     }
-    writeAgentState({ mode: 'error', running: false, lastAction: 'AI agent paused after an error.', error: message });
+    writeAgentState({
+      mode: 'running',
+      running: true,
+      lastAttemptAt: new Date().toISOString(),
+      nextRunAt: new Date(Date.now() + agentUploadIntervalMs).toISOString(),
+      lastAction: 'AI agent hit an error and will retry on the next cycle.',
+      error: message,
+    });
   } finally {
     agentWorking = false;
   }
@@ -400,7 +654,8 @@ app.post('/api/agent/start', (_req, res) => {
     running: true,
     mode: 'running',
     startedAt: new Date().toISOString(),
-    lastAction: 'AI agent started. Scanning source queue, editing videos, and uploading private drafts.',
+    nextRunAt: getNextAgentRunAt(readAgentState().lastUploadAt),
+    lastAction: 'AI agent started. It will upload one public video every 5 minutes while running.',
     error: '',
   });
   appendAgentLog('AI agent started by admin.');
@@ -644,6 +899,6 @@ app.listen(port, () => {
 
 setInterval(() => {
   void processNextAgentJob();
-}, 30000);
+}, agentTickMs);
 
 void processNextAgentJob();
