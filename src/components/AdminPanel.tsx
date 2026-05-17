@@ -55,6 +55,12 @@ interface ServerStatus {
   hasYouTubeOAuthClient: boolean;
   youtubeConnected: boolean;
   redirectUri: string;
+  agentUsTimezone: string;
+  agentPrimeHours: number[];
+  agentUseUsPrimeWindows: boolean;
+  agentRequireSourceAudio: boolean;
+  agentMinRecentViews: number;
+  agentPauseOnLowViews: boolean;
 }
 
 interface AgentStatus {
@@ -80,6 +86,15 @@ interface AgentStatus {
     provider: string;
     identifier?: string;
   }[];
+  nextRunAt?: string;
+  lastPerformance?: {
+    averageViews: number;
+    checkedVideos: number;
+    latestTitle: string;
+    latestViews: number;
+    underperforming: boolean;
+    checkedAt: string;
+  };
   error?: string;
 }
 
@@ -245,6 +260,14 @@ export default function AdminPanel() {
               <p className="text-xs text-zinc-500 mt-2">
                 Queue: {agent?.queueCount ?? 0} video • Completed: {agent?.jobsCompleted ?? 0} upload
               </p>
+              <p className="text-xs text-zinc-500 mt-1">
+                Next US window: {agent?.nextRunAt ? new Date(agent.nextRunAt).toLocaleString() : 'checking'} â€¢ Audio required: {status?.agentRequireSourceAudio ? 'yes' : 'no'}
+              </p>
+              {agent?.lastPerformance && (
+                <p className={`text-xs mt-1 ${agent.lastPerformance.underperforming ? 'text-amber-300' : 'text-emerald-300'}`}>
+                  View check: avg {agent.lastPerformance.averageViews} views from {agent.lastPerformance.checkedVideos} recent videos.
+                </p>
+              )}
               {agent?.error && <p className="text-xs text-red-400 mt-2">{agent.error}</p>}
             </div>
           </div>
@@ -282,7 +305,7 @@ export default function AdminPanel() {
               </div>
               <div>
                 <p className="text-xs font-bold text-white">Add source video</p>
-                <p className="text-[10px] text-zinc-500 mt-0.5">Agent edits and uploads private draft</p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">Agent checks audio, edits, then waits for US prime-time</p>
               </div>
             </div>
             {sourceUploadStatus && <p className="text-[10px] text-zinc-400 mt-3">{sourceUploadStatus}</p>}

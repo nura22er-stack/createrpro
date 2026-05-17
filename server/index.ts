@@ -5,12 +5,19 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import multer from 'multer';
 import { google } from 'googleapis';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
+
+const require = createRequire(import.meta.url);
+const ffmpegStaticPath = require('ffmpeg-static') as string | null;
+const ffprobeStatic = require('ffprobe-static') as { path?: string };
+const ffmpegBin = ffmpegStaticPath || 'ffmpeg';
+const ffprobeBin = ffprobeStatic.path || 'ffprobe';
 
 const app = express();
 const port = Number(process.env.SERVER_PORT || 8787);
@@ -21,6 +28,7 @@ const agentPath = path.join(dataDir, 'agent.json');
 const agentLogPath = path.join(dataDir, 'agent-log.json');
 const agentSourceCursorPath = path.join(dataDir, 'agent-source-cursor.json');
 const agentSourceHistoryPath = path.join(dataDir, 'agent-source-history.json');
+const agentUploadHistoryPath = path.join(dataDir, 'agent-upload-history.json');
 const notificationsPath = path.join(dataDir, 'notifications.json');
 const youtubeSummarySnapshotPath = path.join(dataDir, 'youtube-summary-snapshot.json');
 const voiceDir = path.join(dataDir, 'voice');
@@ -38,15 +46,34 @@ const agentShortDuration = Number(process.env.AGENT_SHORT_DURATION_SECONDS || 18
 const staleProcessingMs = Number(process.env.AGENT_STALE_PROCESSING_MS || 2 * 60 * 1000);
 const agentDailyUploadLimit = Number(process.env.AGENT_DAILY_UPLOAD_LIMIT || 2);
 const agentDayTimezoneOffsetMinutes = Number(process.env.AGENT_DAY_TIMEZONE_OFFSET_MINUTES || 5 * 60);
+const agentUsTimezone = process.env.AGENT_US_TIMEZONE || 'America/New_York';
+const agentPrimeHours = String(process.env.AGENT_US_PRIME_HOURS || '18,19,20,21')
+  .split(',')
+  .map((hour) => Number(hour.trim()))
+  .filter((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23);
+const agentUseUsPrimeWindows = process.env.AGENT_USE_US_PRIME_WINDOWS === 'true';
+const agentMinRecentViews = Number(process.env.AGENT_MIN_RECENT_VIDEO_VIEWS || 25);
+const agentPerformanceLookback = Number(process.env.AGENT_PERFORMANCE_LOOKBACK || 6);
+const agentPauseOnLowViews = process.env.AGENT_PAUSE_ON_LOW_VIEWS === 'true';
+const agentRequireSourceAudio = process.env.AGENT_REQUIRE_SOURCE_AUDIO !== 'false';
+const agentProbeSegmentSeconds = Number(process.env.AGENT_PROBE_SEGMENT_SECONDS || 8);
+const agentMinAudioMeanVolumeDb = Number(process.env.AGENT_MIN_AUDIO_MEAN_VOLUME_DB || -35);
+const agentAutostartAfterAuth = process.env.AGENT_AUTOSTART_AFTER_AUTH === 'true';
 const adminEmail = (process.env.ADMIN_EMAIL || 'm6dhhjffu@gmail.com').toLowerCase();
 const sessionCookieName = 'creator_pro_admin';
 const agentSourceMaxBytes = Number(process.env.AGENT_SOURCE_MAX_BYTES || 280 * 1024 * 1024);
+const youtubeOAuthScopes = [
+  'openid',
+  'email',
+  'profile',
+  'https://www.googleapis.com/auth/youtube.upload',
+  'https://www.googleapis.com/auth/youtube.readonly',
+  'https://www.googleapis.com/auth/youtube.force-ssl',
+  'https://www.googleapis.com/auth/yt-analytics.readonly',
+];
 const archiveComedyIdentifiers = [
   'eddie_cantor_1923',
   'the-sawmill',
-  'silent-his-musical-career',
-  'his-musical-career-1914',
-  'his-musical-career-1914-directed-by-charles-chaplin',
   'out_of_this_world',
   'tomorrow_television',
   'middleton_family_worlds_fair_1939',
@@ -238,6 +265,13 @@ function getStatus() {
     youtubeConnected: connected,
     redirectUri: process.env.YOUTUBE_REDIRECT_URI || `http://localhost:${port}/auth/youtube/callback`,
     clientSecretType: secrets?.client_id ? (readClientSecrets()?.redirect_uris?.includes('http://localhost') ? 'installed' : 'web') : 'env',
+    agentUsTimezone,
+    agentPrimeHours,
+    agentUseUsPrimeWindows,
+    agentRequireSourceAudio,
+    agentMinRecentViews,
+    agentPauseOnLowViews,
+    agentAutostartAfterAuth,
   };
 }
 
@@ -317,6 +351,51 @@ function recordAgentSource(source: AgentSourceCandidate) {
   history.unshift(entry);
   fs.writeFileSync(agentSourceHistoryPath, JSON.stringify(history.slice(0, 40), null, 2));
   writeAgentState({ currentSource: entry });
+}
+
+function readAgentUploadHistory() {
+  if (!fs.existsSync(agentUploadHistoryPath)) return [];
+  return JSON.parse(fs.readFileSync(agentUploadHistoryPath, 'utf8')) as Array<{
+    at: string;
+    title: string;
+    videoId?: string;
+    sourceTitle?: string;
+  }>;
+}
+
+function normalizeUploadTitle(title: string) {
+  return title
+    .toLowerCase()
+    .replace(/#shorts/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function assertUploadIsFresh(title: string) {
+  const normalizedTitle = normalizeUploadTitle(title);
+  const history = readAgentUploadHistory();
+  const repeated = history.find((item) => normalizeUploadTitle(item.title) === normalizedTitle);
+
+  if (repeated) {
+    throw new Error(`AI skipped duplicate upload title: ${title}`);
+  }
+
+  if (/retro quest|neon dodge|anime arcade mini game/i.test(title)) {
+    throw new Error(`AI skipped low-performing generated game template: ${title}`);
+  }
+}
+
+function recordAgentUpload(title: string, videoId: string) {
+  ensureDataDir();
+  const currentSource = readAgentState().currentSource as { title?: string } | undefined;
+  const history = readAgentUploadHistory();
+  history.unshift({
+    at: new Date().toISOString(),
+    title,
+    videoId,
+    sourceTitle: currentSource?.title || '',
+  });
+  fs.writeFileSync(agentUploadHistoryPath, JSON.stringify(history.slice(0, 100), null, 2));
 }
 
 function isAllowedSourceCandidate(...values: Array<unknown>) {
@@ -399,6 +478,61 @@ function listVideosInDir(directory: string) {
 
 function listSourceVideos() {
   return listVideosInDir(sourceDir);
+}
+
+function getLatestVideoInDir(directory: string) {
+  const [latest] = listVideosInDir(directory).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  return latest || '';
+}
+
+function getAgentMediaSnapshot() {
+  const processed = getLatestVideoInDir(processedDir);
+  const processing = getLatestVideoInDir(processingDir);
+  const source = getLatestVideoInDir(sourceDir);
+  const filePath = processed || processing || source;
+  const stage = processed ? 'processed' : processing ? 'processing' : source ? 'source' : '';
+
+  if (!filePath) {
+    return {
+      stage: '',
+      fileName: '',
+      url: '',
+      updatedAt: '',
+    };
+  }
+
+  return {
+    stage,
+    fileName: path.basename(filePath),
+    url: `/api/agent/media/file/${stage}/${encodeURIComponent(path.basename(filePath))}`,
+    updatedAt: new Date(fs.statSync(filePath).mtimeMs).toISOString(),
+  };
+}
+
+function sendAgentMediaFile(req: express.Request, res: express.Response) {
+  const stage = String(req.params.stage || '');
+  const fileName = path.basename(String(req.params.fileName || ''));
+  const directories: Record<string, string> = {
+    source: sourceDir,
+    processing: processingDir,
+    processed: processedDir,
+  };
+  const directory = directories[stage];
+
+  if (!directory || !fileName) {
+    res.status(404).json({ error: 'Agent media not found.' });
+    return;
+  }
+
+  const filePath = path.resolve(directory, fileName);
+  const root = path.resolve(directory);
+
+  if (!filePath.startsWith(root + path.sep) || !fs.existsSync(filePath)) {
+    res.status(404).json({ error: 'Agent media not found.' });
+    return;
+  }
+
+  res.sendFile(filePath);
 }
 
 function cleanupStaleProcessingFiles() {
@@ -621,6 +755,163 @@ function runYtDlp(url: string, outputTemplate: string) {
   });
 }
 
+function runFfprobe(inputPath: string) {
+  return new Promise<{ hasAudio: boolean; duration: number }>((resolve, reject) => {
+    const args = [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration:stream=codec_type',
+      '-of',
+      'json',
+      inputPath,
+    ];
+    const child = spawn(ffprobeBin, args);
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.slice(-1200) || `ffprobe exited with code ${code}`));
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(stdout);
+        resolve({
+          hasAudio: (parsed.streams || []).some((stream: { codec_type?: string }) => stream.codec_type === 'audio'),
+          duration: Number(parsed.format?.duration || 0),
+        });
+      } catch {
+        reject(new Error('ffprobe returned unreadable media metadata.'));
+      }
+    });
+  });
+}
+
+function runMotionProbe(inputPath: string, startAt: number) {
+  return new Promise<{ frozen: boolean; freezeDuration: number }>((resolve, reject) => {
+    const args = [
+      '-v',
+      'info',
+      '-ss',
+      String(Math.max(0, startAt)),
+      '-t',
+      String(agentProbeSegmentSeconds),
+      '-i',
+      inputPath,
+      '-vf',
+      'freezedetect=n=-50dB:d=3',
+      '-an',
+      '-f',
+      'null',
+      '-',
+    ];
+    const child = spawn(ffmpegBin, args);
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.slice(-1200) || `motion probe exited with code ${code}`));
+        return;
+      }
+
+      const freezeDurations = Array.from(stderr.matchAll(/freeze_duration:\s*([0-9.]+)/g)).map((match) => Number(match[1] || 0));
+      const longestFreeze = Math.max(0, ...freezeDurations);
+      resolve({
+        frozen: longestFreeze >= Math.min(5, agentProbeSegmentSeconds - 1),
+        freezeDuration: longestFreeze,
+      });
+    });
+  });
+}
+
+function runAudioProbe(inputPath: string, startAt: number) {
+  return new Promise<{ meanVolume: number; maxVolume: number }>((resolve, reject) => {
+    const args = [
+      '-v',
+      'info',
+      '-ss',
+      String(Math.max(0, startAt)),
+      '-t',
+      String(agentProbeSegmentSeconds),
+      '-i',
+      inputPath,
+      '-vn',
+      '-af',
+      'volumedetect',
+      '-f',
+      'null',
+      '-',
+    ];
+    const child = spawn(ffmpegBin, args);
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.slice(-1200) || `audio probe exited with code ${code}`));
+        return;
+      }
+
+      const meanVolume = Number(stderr.match(/mean_volume:\s*(-?[0-9.]+)\s*dB/)?.[1] ?? Number.NEGATIVE_INFINITY);
+      const maxVolume = Number(stderr.match(/max_volume:\s*(-?[0-9.]+)\s*dB/)?.[1] ?? Number.NEGATIVE_INFINITY);
+      resolve({ meanVolume, maxVolume });
+    });
+  });
+}
+
+async function pickAgentClipStart(inputPath: string, duration: number) {
+  const maxStart = Math.max(0, duration - agentShortDuration - 1);
+  const candidates = [0.12, 0.25, 0.45, 0.65]
+    .map((ratio) => Math.min(maxStart, Math.round(duration * ratio)))
+    .filter((startAt, index, values) => startAt >= 0 && values.indexOf(startAt) === index);
+
+  for (const startAt of candidates.length ? candidates : [0]) {
+    const motion = await runMotionProbe(inputPath, startAt);
+    if (!motion.frozen) {
+      return { startAt, freezeDuration: motion.freezeDuration };
+    }
+  }
+
+  throw new Error('Source video looks static/frozen. AI skipped it so a one-frame video is not uploaded.');
+}
+
+async function validateAgentSource(inputPath: string) {
+  const media = await runFfprobe(inputPath);
+
+  if (agentRequireSourceAudio && !media.hasAudio) {
+    throw new Error('Source video has no audio. AI skipped it so silent content is not uploaded.');
+  }
+
+  if (media.duration && media.duration < Math.min(8, agentShortDuration)) {
+    throw new Error('Source video is too short for a useful Shorts edit.');
+  }
+
+  const motion = await pickAgentClipStart(inputPath, media.duration || agentShortDuration);
+  const audio = media.hasAudio ? await runAudioProbe(inputPath, motion.startAt) : { meanVolume: Number.NEGATIVE_INFINITY, maxVolume: Number.NEGATIVE_INFINITY };
+
+  if (agentRequireSourceAudio && audio.meanVolume < agentMinAudioMeanVolumeDb) {
+    throw new Error(`Source audio is too quiet (${audio.meanVolume} dB). AI skipped it so silent videos are not uploaded.`);
+  }
+
+  return { ...media, ...motion, ...audio };
+}
+
 async function downloadDirectSource(url: string, destination: string) {
   const response = await fetch(url);
 
@@ -677,7 +968,7 @@ function runGeneratedGameSource(outputPath: string) {
       '+faststart',
       outputPath,
     ];
-    const child = spawn('ffmpeg', args);
+    const child = spawn(ffmpegBin, args);
     let stderr = '';
 
     child.stderr.on('data', (chunk) => {
@@ -709,7 +1000,9 @@ async function queueGeneratedGameSource() {
 
 async function queueSourceFromUrl() {
   const allowWikimediaFallback = process.env.AGENT_ALLOW_WIKIMEDIA_FALLBACK === 'true';
-  const useGeneratedSource = process.env.AGENT_USE_GENERATED_GAME_SOURCE !== 'false';
+  const useGeneratedSource =
+    process.env.AGENT_USE_GENERATED_GAME_SOURCE === 'true' &&
+    process.env.AGENT_ALLOW_LOW_PERFORMANCE_GENERATED_GAME === 'true';
   if (useGeneratedSource) {
     return queueGeneratedGameSource();
   }
@@ -750,18 +1043,14 @@ async function queueSourceFromUrl() {
   return downloaded;
 }
 
-function runFfmpeg(inputPath: string, outputPath: string) {
+function runFfmpeg(inputPath: string, outputPath: string, startAt = 0) {
   return new Promise<void>((resolve, reject) => {
     const args = [
       '-y',
+      '-ss',
+      String(Math.max(0, startAt)),
       '-i',
       inputPath,
-      '-f',
-      'lavfi',
-      '-t',
-      String(agentShortDuration),
-      '-i',
-      `sine=frequency=440:beep_factor=4:sample_rate=44100:duration=${agentShortDuration},volume=0.06`,
       '-t',
       String(agentShortDuration),
       '-vf',
@@ -769,7 +1058,7 @@ function runFfmpeg(inputPath: string, outputPath: string) {
       '-map',
       '0:v:0',
       '-map',
-      '1:a:0',
+      '0:a:0',
       '-r',
       '30',
       '-c:v',
@@ -793,7 +1082,7 @@ function runFfmpeg(inputPath: string, outputPath: string) {
       '+faststart',
       outputPath,
     ];
-    const child = spawn('ffmpeg', args);
+    const child = spawn(ffmpegBin, args);
     let stderr = '';
 
     child.stderr.on('data', (chunk) => {
@@ -878,6 +1167,32 @@ function buildUploadMetadata(sourcePath: string) {
   };
 }
 
+function buildDraftUploadMetadata(videoPath: string) {
+  const state = readAgentState();
+  const draftMetadata = state.draftMetadata as { title?: string; description?: string; tags?: string[] } | undefined;
+
+  if (draftMetadata?.title && draftMetadata?.description && Array.isArray(draftMetadata.tags)) {
+    return {
+      title: draftMetadata.title,
+      description: draftMetadata.description,
+      tags: draftMetadata.tags,
+    };
+  }
+
+  const titleSeed = path.basename(videoPath, path.extname(videoPath)).replace(/[-_]+/g, ' ');
+  return {
+    title: `AI Creator Boost - Better Shorts Strategy #shorts`.slice(0, 100),
+    description: [
+      'Original AI-generated short with audible sound and motion.',
+      `Draft: ${titleSeed}`,
+      'Posted from Creator Pro after quality checks for audio, motion and duplicate titles.',
+      '',
+      '#shorts #creator #aitools #growth',
+    ].join('\n'),
+    tags: ['shorts', 'creator tips', 'ai tools', 'youtube growth', 'content strategy'],
+  };
+}
+
 async function uploadVideoPath(videoPath: string, metadata: { title: string; description: string; tags: string[] }) {
   const client = getOAuthClient();
 
@@ -915,16 +1230,106 @@ async function uploadVideoPath(videoPath: string, metadata: { title: string; des
 
 let agentWorking = false;
 
+function getHourInTimezone(date: Date, timeZone: string) {
+  const hour = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: 'numeric',
+    hour12: false,
+  }).format(date);
+  return Number(hour);
+}
+
+function getNextUsPrimeWindow(now = new Date()) {
+  const hours = agentPrimeHours.length ? agentPrimeHours : [18, 19, 20, 21];
+  const currentHour = getHourInTimezone(now, agentUsTimezone);
+
+  if (hours.includes(currentHour)) {
+    return now;
+  }
+
+  for (let minutes = 15; minutes <= 48 * 60; minutes += 15) {
+    const candidate = new Date(now.getTime() + minutes * 60 * 1000);
+    if (hours.includes(getHourInTimezone(candidate, agentUsTimezone))) {
+      candidate.setUTCMinutes(Math.ceil(candidate.getUTCMinutes() / 15) * 15, 0, 0);
+      return candidate;
+    }
+  }
+
+  return new Date(now.getTime() + agentUploadIntervalMs);
+}
+
 function getNextAgentRunAt(lastUploadAt?: unknown) {
   const lastUploadTime = lastUploadAt ? new Date(String(lastUploadAt)).getTime() : 0;
-  if (!lastUploadTime) return new Date().toISOString();
+  const intervalReadyAt = lastUploadTime ? new Date(lastUploadTime + agentUploadIntervalMs) : new Date();
 
-  return new Date(lastUploadTime + agentUploadIntervalMs).toISOString();
+  if (!agentUseUsPrimeWindows) {
+    return intervalReadyAt.toISOString();
+  }
+
+  return getNextUsPrimeWindow(intervalReadyAt).toISOString();
 }
 
 function shouldWaitForNextUpload(lastUploadAt?: unknown) {
-  const lastUploadTime = lastUploadAt ? new Date(String(lastUploadAt)).getTime() : 0;
-  return Boolean(lastUploadTime && Date.now() - lastUploadTime < agentUploadIntervalMs);
+  return new Date(getNextAgentRunAt(lastUploadAt)).getTime() > Date.now();
+}
+
+async function getRecentChannelPerformance() {
+  const client = getOAuthClient();
+
+  if (!client || !fs.existsSync(tokenPath)) {
+    return null;
+  }
+
+  const youtube = google.youtube({ version: 'v3', auth: client });
+  const channelResponse = await youtube.channels.list({
+    mine: true,
+    part: ['contentDetails'],
+  });
+  const uploadsPlaylistId = channelResponse.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+
+  if (!uploadsPlaylistId) {
+    return null;
+  }
+
+  const playlistResponse = await youtube.playlistItems.list({
+    playlistId: uploadsPlaylistId,
+    part: ['contentDetails'],
+    maxResults: Math.min(50, Math.max(agentPerformanceLookback, 3)),
+  });
+  const videoIds = (playlistResponse.data.items || [])
+    .map((item) => item.contentDetails?.videoId)
+    .filter(Boolean)
+    .slice(0, agentPerformanceLookback) as string[];
+
+  if (!videoIds.length) {
+    return null;
+  }
+
+  const videosResponse = await youtube.videos.list({
+    id: videoIds,
+    part: ['snippet', 'statistics'],
+  });
+  const videos = (videosResponse.data.items || []).map((video) => ({
+    id: video.id || '',
+    title: video.snippet?.title || 'Untitled',
+    views: Number(video.statistics?.viewCount || 0),
+    likes: Number(video.statistics?.likeCount || 0),
+    comments: Number(video.statistics?.commentCount || 0),
+    publishedAt: video.snippet?.publishedAt || '',
+  }));
+  const averageViews = videos.length
+    ? Math.round(videos.reduce((total, video) => total + video.views, 0) / videos.length)
+    : 0;
+
+  return {
+    averageViews,
+    checkedVideos: videos.length,
+    latestTitle: videos[0]?.title || '',
+    latestViews: videos[0]?.views || 0,
+    underperforming: videos.length >= 3 && averageViews < agentMinRecentViews,
+    videos,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 async function processNextAgentJob() {
@@ -955,17 +1360,108 @@ async function processNextAgentJob() {
     return;
   }
 
-  const lastCycleAt = state.lastAttemptAt || state.lastUploadAt;
-  if (shouldWaitForNextUpload(lastCycleAt)) {
+  const explicitNextRunAt = state.nextRunAt ? new Date(String(state.nextRunAt)).getTime() : 0;
+  if (explicitNextRunAt && explicitNextRunAt > Date.now()) {
     writeAgentState({
-      mode: 'running',
-      nextRunAt: getNextAgentRunAt(lastCycleAt),
-      lastAction: `AI agent is running. Next upload window: ${getNextAgentRunAt(lastCycleAt)}.`,
+      mode: state.mode || 'running',
+      nextRunAt: new Date(explicitNextRunAt).toISOString(),
+      lastAction: state.lastAction || `AI agent is waiting until ${new Date(explicitNextRunAt).toISOString()}.`,
     });
     return;
   }
 
+  const lastCycleAt = state.lastAttemptAt || state.lastUploadAt;
+  if (shouldWaitForNextUpload(lastCycleAt)) {
+    const nextRunAt = getNextAgentRunAt(lastCycleAt);
+    writeAgentState({
+      mode: 'running',
+      nextRunAt,
+      lastAction: agentUseUsPrimeWindows
+        ? `AI agent is waiting for the next US audience window: ${nextRunAt}.`
+        : `AI agent is running. Next upload cycle: ${nextRunAt}.`,
+    });
+    return;
+  }
+
+  try {
+    const performance = await getRecentChannelPerformance();
+    if (performance) {
+      writeAgentState({ lastPerformance: performance });
+
+      if (agentPauseOnLowViews && performance.underperforming) {
+        const nextRunAt = getNextUsPrimeWindow(new Date(Date.now() + 6 * 60 * 60 * 1000)).toISOString();
+        appendAgentLog(
+          `Recent views are low (${performance.averageViews} avg across ${performance.checkedVideos} videos). Agent is slowing down and will re-check before uploading.`,
+        );
+        writeAgentState({
+          mode: 'reviewing-performance',
+          nextRunAt,
+          lastAttemptAt: new Date().toISOString(),
+          lastAction: `Recent videos average ${performance.averageViews} views. AI paused uploads until the next US prime-time re-check.`,
+        });
+        return;
+      }
+
+      if (performance.underperforming) {
+        appendAgentLog(
+          `Recent views are low (${performance.averageViews} avg), but auto-pause is off so the agent will keep the old upload rhythm.`,
+        );
+      }
+    }
+  } catch (error) {
+    appendAgentLog(`Performance check skipped: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+
   agentWorking = true;
+  const processedDraft = getLatestVideoInDir(processedDir);
+  if (processedDraft) {
+    try {
+      const media = await validateAgentSource(processedDraft);
+      appendAgentLog(
+        `Uploading prepared draft after quality check: audio=${media.hasAudio ? 'yes' : 'no'}, mean=${media.meanVolume} dB.`,
+      );
+      const metadata = buildDraftUploadMetadata(processedDraft);
+      assertUploadIsFresh(metadata.title);
+      writeAgentState({ mode: 'uploading', lastAction: `Uploading prepared draft: ${metadata.title}` });
+      const videoId = await uploadVideoPath(processedDraft, metadata);
+      recordAgentUpload(metadata.title, String(videoId || ''));
+      appendAgentLog(`Uploaded prepared draft to YouTube. Video ID: ${videoId}`);
+      fs.rmSync(processedDraft, { force: true });
+      const lastUploadAt = new Date().toISOString();
+      const nextDailyCount = getDailyUploadCount(readAgentState()) + 1;
+      const nextRunAt = nextDailyCount >= agentDailyUploadLimit ? getNextAgentDayStart().toISOString() : getNextAgentRunAt(lastUploadAt);
+      writeAgentState({
+        mode: 'running',
+        jobsCompleted: Number(state.jobsCompleted || 0) + 1,
+        lastAction:
+          nextDailyCount >= agentDailyUploadLimit
+            ? `Uploaded prepared draft. Daily limit reached (${nextDailyCount}/${agentDailyUploadLimit}).`
+            : `Uploaded prepared draft. Video ID: ${videoId}`,
+        lastUploadAt,
+        dailyUploadDay: getAgentDayKey(new Date(lastUploadAt)),
+        dailyUploadCount: nextDailyCount,
+        nextRunAt,
+        draftMetadata: null,
+        error: '',
+      });
+      agentWorking = false;
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Prepared draft upload failed.';
+      appendAgentLog(`Prepared draft error: ${message}`);
+      writeAgentState({
+        mode: 'running',
+        running: true,
+        lastAttemptAt: new Date().toISOString(),
+        nextRunAt: new Date(Date.now() + agentUploadIntervalMs).toISOString(),
+        lastAction: 'AI could not upload the prepared draft and will retry later.',
+        error: message,
+      });
+      agentWorking = false;
+      return;
+    }
+  }
+
   let [nextSource] = listSourceVideos();
   if (!nextSource) {
     try {
@@ -1011,13 +1507,19 @@ async function processNextAgentJob() {
       lastAction: `Editing ${path.basename(processingPath)} with FFmpeg.`,
     });
 
-    await runFfmpeg(processingPath, outputPath);
+    const media = await validateAgentSource(processingPath);
+    appendAgentLog(
+      `Source quality check passed: audio=${media.hasAudio ? 'yes' : 'no'}, mean=${media.meanVolume} dB, duration=${media.duration ? Math.round(media.duration) : 'unknown'}s, clipStart=${media.startAt}s.`,
+    );
+    await runFfmpeg(processingPath, outputPath, media.startAt);
 
     const metadata = buildUploadMetadata(processingPath);
+    assertUploadIsFresh(metadata.title);
     appendAgentLog(`Uploading ${path.basename(outputPath)} to YouTube as ${process.env.AGENT_PRIVACY_STATUS || 'public'}.`);
     writeAgentState({ mode: 'uploading', lastAction: `Uploading ${metadata.title}` });
 
     const videoId = await uploadVideoPath(outputPath, metadata);
+    recordAgentUpload(metadata.title, String(videoId || ''));
     appendAgentLog(`Uploaded video to YouTube. Video ID: ${videoId}`);
     fs.rmSync(processingPath, { force: true });
     const lastUploadAt = new Date().toISOString();
@@ -1053,6 +1555,100 @@ async function processNextAgentJob() {
   } finally {
     agentWorking = false;
   }
+}
+
+async function prepareAgentDraft() {
+  if (agentWorking) {
+    return {
+      state: writeAgentState({
+        mode: 'editing',
+        lastAction: 'AI agent is already preparing a video.',
+      }),
+      metadata: null,
+    };
+  }
+
+  agentWorking = true;
+  let nextSource = getLatestVideoInDir(sourceDir);
+  let processingPath = '';
+
+  try {
+    if (!nextSource) {
+      writeAgentState({
+        mode: 'finding-source',
+        lastAction: 'AI is generating a source video for the editor.',
+      });
+      nextSource = (await queueSourceFromUrl()) || '';
+    }
+
+    if (!nextSource) {
+      throw new Error('AI could not prepare a source video.');
+    }
+
+    processingPath = path.join(processingDir, path.basename(nextSource));
+    const outputPath = path.join(processedDir, `${path.basename(nextSource, path.extname(nextSource))}-short.mp4`);
+    fs.renameSync(nextSource, processingPath);
+
+    writeAgentState({
+      running: false,
+      mode: 'editing',
+      lastAttemptAt: new Date().toISOString(),
+      lastAction: `AI is preparing ${path.basename(processingPath)} for preview.`,
+      error: '',
+    });
+
+    const media = await validateAgentSource(processingPath);
+    await runFfmpeg(processingPath, outputPath, media.startAt);
+    const metadata = buildUploadMetadata(processingPath);
+    assertUploadIsFresh(metadata.title);
+    fs.rmSync(processingPath, { force: true });
+
+    const state = writeAgentState({
+      running: false,
+      mode: 'draft-ready',
+      lastAction: `AI draft is ready: ${metadata.title}`,
+      draftMetadata: metadata,
+      error: '',
+    });
+    appendAgentLog(`AI draft prepared for editor: ${metadata.title}`);
+
+    return {
+      state,
+      metadata,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'AI draft preparation failed.';
+    appendAgentLog(`Draft error: ${message}`);
+
+    if (processingPath && fs.existsSync(processingPath)) {
+      fs.renameSync(processingPath, path.join(failedDir, path.basename(processingPath)));
+    }
+
+    const state = writeAgentState({
+      running: false,
+      mode: 'paused',
+      lastAction: 'AI could not prepare a video draft.',
+      error: message,
+    });
+
+    throw Object.assign(new Error(message), { state });
+  } finally {
+    agentWorking = false;
+  }
+}
+
+function startAgentAfterOAuth() {
+  const state = writeAgentState({
+    running: true,
+    mode: 'running',
+    startedAt: new Date().toISOString(),
+    nextRunAt: getNextAgentRunAt(readAgentState().lastUploadAt),
+    lastAction: `YouTube connected. AI agent started automatically and will upload up to ${agentDailyUploadLimit} videos per day.`,
+    error: '',
+  });
+  appendAgentLog('YouTube OAuth connected. AI agent auto-started.');
+  void processNextAgentJob();
+  return state;
 }
 
 app.get('/api/config/status', requireAdmin, (_req, res) => {
@@ -1149,15 +1745,80 @@ app.get('/api/voice/welcome', async (_req, res) => {
   }
 });
 
+app.get('/api/agent/public-media', (_req, res) => {
+  const state = readAgentState();
+  const media = getAgentMediaSnapshot();
+  res.json({
+    running: Boolean(state.running),
+    mode: state.mode || 'paused',
+    lastAction: state.lastAction || 'AI draft preview is ready.',
+    media: media.url
+      ? {
+          ...media,
+          url: media.url.replace('/api/agent/media/file/', '/api/agent/public-media/file/'),
+        }
+      : media,
+    error: state.error || '',
+  });
+});
+
+app.get('/api/agent/public-media/file/:stage/:fileName', sendAgentMediaFile);
+
 app.get('/api/agent/status', requireAdmin, (_req, res) => {
-  res.json(readAgentState());
+  res.json({
+    ...readAgentState(),
+    media: getAgentMediaSnapshot(),
+  });
+});
+
+app.get('/api/agent/media', requireAdmin, (_req, res) => {
+  res.json({
+    agent: readAgentState(),
+    media: getAgentMediaSnapshot(),
+  });
+});
+
+app.get('/api/agent/media/file/:stage/:fileName', requireAdmin, (req, res) => {
+  sendAgentMediaFile(req, res);
+});
+
+app.post('/api/agent/prepare', requireAdmin, async (_req, res) => {
+  try {
+    const result = await prepareAgentDraft();
+    res.json({
+      ok: true,
+      ...result.state,
+      media: getAgentMediaSnapshot(),
+      metadata: result.metadata,
+    });
+  } catch (error) {
+    const state = error instanceof Error && 'state' in error ? (error as Error & { state?: Record<string, unknown> }).state : readAgentState();
+    res.status(502).json({
+      error: error instanceof Error ? error.message : 'AI draft preparation failed.',
+      ...state,
+      media: getAgentMediaSnapshot(),
+    });
+  }
 });
 
 app.post('/api/agent/start', requireAdmin, (_req, res) => {
   if (!fs.existsSync(tokenPath)) {
-    res.status(409).json({
-      error: 'YouTube account is not connected. Connect YouTube before starting the AI agent.',
-    });
+    void prepareAgentDraft()
+      .then((result) => {
+        res.status(409).json({
+          error: 'YouTube account is not connected. AI draft is ready in the editor, but upload needs Google/YouTube OAuth.',
+          ...result.state,
+          media: getAgentMediaSnapshot(),
+          metadata: result.metadata,
+        });
+      })
+      .catch((error) => {
+        res.status(409).json({
+          error: error instanceof Error ? error.message : 'YouTube account is not connected and AI draft could not be prepared.',
+          ...readAgentState(),
+          media: getAgentMediaSnapshot(),
+        });
+      });
     return;
   }
 
@@ -1166,7 +1827,7 @@ app.post('/api/agent/start', requireAdmin, (_req, res) => {
     mode: 'running',
     startedAt: new Date().toISOString(),
     nextRunAt: getNextAgentRunAt(readAgentState().lastUploadAt),
-    lastAction: `AI agent started. It will upload up to ${agentDailyUploadLimit} public videos per day.`,
+    lastAction: `AI agent started. It will check views, require source audio, and upload during US audience windows.`,
     error: '',
   });
   appendAgentLog('AI agent started by admin.');
@@ -1227,9 +1888,9 @@ app.get('/auth/admin', (_req, res) => {
 
   const url = client.generateAuthUrl({
     access_type: 'offline',
-    prompt: 'select_account',
+    prompt: 'consent select_account',
     state: 'admin-login',
-    scope: ['openid', 'email', 'profile'],
+    scope: youtubeOAuthScopes,
   });
 
   res.redirect(url);
@@ -1242,7 +1903,7 @@ app.post('/auth/admin/logout', (_req, res) => {
 
 app.get('/auth/youtube', (req, res) => {
   if (!isAdminRequest(req)) {
-    res.redirect('/?auth=required');
+    res.redirect('/auth/admin');
     return;
   }
 
@@ -1257,12 +1918,7 @@ app.get('/auth/youtube', (req, res) => {
     access_type: 'offline',
     prompt: 'consent',
     state: 'youtube-connect',
-    scope: [
-      'https://www.googleapis.com/auth/youtube.upload',
-      'https://www.googleapis.com/auth/youtube.readonly',
-      'https://www.googleapis.com/auth/youtube.force-ssl',
-      'https://www.googleapis.com/auth/yt-analytics.readonly',
-    ],
+    scope: youtubeOAuthScopes,
   });
 
   res.redirect(url);
@@ -1287,8 +1943,13 @@ app.get('/auth/youtube/callback', async (req, res) => {
       return;
     }
 
+    ensureDataDir();
+    fs.writeFileSync(tokenPath, JSON.stringify(tokens, null, 2));
+    if (agentAutostartAfterAuth) {
+      startAgentAfterOAuth();
+    }
     res.setHeader('Set-Cookie', `${sessionCookieName}=${encodeURIComponent(signSession(email))}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`);
-    res.redirect(`${getAppUrl()}?admin=connected`);
+    res.redirect(`${getAppUrl()}?admin=connected${agentAutostartAfterAuth ? '&ai=started' : ''}`);
     return;
   }
 
@@ -1299,7 +1960,10 @@ app.get('/auth/youtube/callback', async (req, res) => {
 
   ensureDataDir();
   fs.writeFileSync(tokenPath, JSON.stringify(tokens, null, 2));
-  res.redirect(`${getAppUrl()}?youtube=connected`);
+  if (agentAutostartAfterAuth) {
+    startAgentAfterOAuth();
+  }
+  res.redirect(`${getAppUrl()}?youtube=connected${agentAutostartAfterAuth ? '&ai=started' : ''}`);
 });
 
 app.get('*', (req, res, next) => {

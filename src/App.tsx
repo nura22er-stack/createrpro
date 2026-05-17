@@ -51,6 +51,17 @@ interface NotificationItem {
   read: boolean;
 }
 
+interface AgentPublicMedia {
+  mode: string;
+  lastAction: string;
+  media?: {
+    stage: string;
+    fileName: string;
+    url: string;
+    updatedAt: string;
+  };
+}
+
 const emptyProfile: UserProfile = {
   ownerName: '',
   channelName: '',
@@ -69,6 +80,7 @@ export default function App() {
   const [summaryError, setSummaryError] = useState('');
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [publicMedia, setPublicMedia] = useState<AgentPublicMedia | null>(null);
   const [profile, setProfileState] = useState<UserProfile>(() => {
     try {
       const stored = localStorage.getItem('creator-pro-profile');
@@ -106,6 +118,22 @@ export default function App() {
       .then((response) => response.json())
       .then(setSession)
       .catch(() => setSession({ authenticated: false, email: '', adminEmail: 'm6dhhjffu@gmail.com', loginUrl: '/auth/admin' }));
+  }, []);
+
+  useEffect(() => {
+    const loadPublicMedia = () => {
+      fetch('/api/agent/public-media')
+        .then((response) => {
+          if (!response.ok) throw new Error('AI preview unavailable');
+          return response.json();
+        })
+        .then(setPublicMedia)
+        .catch(() => null);
+    };
+
+    loadPublicMedia();
+    const interval = window.setInterval(loadPublicMedia, 10000);
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -213,20 +241,45 @@ export default function App() {
   if (!session.authenticated) {
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4 selection:bg-red-500/30">
-        <div className="glass-panel rounded-2xl p-6 sm:p-8 w-full max-w-md">
+        <div className="glass-panel rounded-2xl p-6 sm:p-8 w-full max-w-4xl">
           <div className="w-12 h-12 bg-red-600 rounded-xl flex items-center justify-center shadow-lg shadow-red-500/20 mb-5">
             <Award className="w-6 h-6 text-white" />
           </div>
-          <h1 className="text-2xl sm:text-3xl font-display font-bold text-white">Creator Pro Admin</h1>
-          <p className="text-sm text-zinc-400 mt-3 leading-relaxed">
-            Bu dashboard shaxsiy. Account, YouTube statistika va admin panel faqat {session.adminEmail} orqali ochiladi.
-          </p>
-          <a
-            href={session.loginUrl}
-            className="mt-6 w-full bg-red-600 hover:bg-red-700 text-white px-4 py-3 rounded-xl text-sm font-bold flex items-center justify-center transition-all"
-          >
-            Google bilan kirish
-          </a>
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_18rem] gap-6 items-start">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-display font-bold text-white">Creator Pro Admin</h1>
+              <p className="text-sm text-zinc-400 mt-3 leading-relaxed">
+                Bu dashboard shaxsiy. Account, YouTube statistika va admin panel faqat {session.adminEmail} orqali ochiladi.
+              </p>
+              <a
+                href={session.loginUrl}
+                className="mt-6 w-full sm:w-auto bg-red-600 hover:bg-red-700 text-white px-5 py-3 rounded-xl text-sm font-bold inline-flex items-center justify-center transition-all"
+              >
+                Google bilan kirish
+              </a>
+              <p className="text-xs text-zinc-500 mt-4">
+                YouTube upload ishlashi uchun Google ruxsati shart. AI tayyorlagan draft o‘ng tomonda ko‘rinadi.
+              </p>
+            </div>
+
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3">
+              {publicMedia?.media?.url ? (
+                <video
+                  src={publicMedia.media.url}
+                  className="w-full aspect-[9/16] rounded-lg bg-black object-cover"
+                  controls
+                  playsInline
+                />
+              ) : (
+                <div className="w-full aspect-[9/16] rounded-lg bg-zinc-900 flex items-center justify-center text-center px-4">
+                  <p className="text-xs text-zinc-500">AI draft hali topilmadi.</p>
+                </div>
+              )}
+              <p className="text-[10px] text-zinc-500 mt-3 line-clamp-2">
+                {publicMedia?.lastAction || 'AI preview yuklanmoqda...'}
+              </p>
+            </div>
+          </div>
         </div>
       </div>
     );
